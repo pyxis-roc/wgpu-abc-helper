@@ -1,6 +1,6 @@
 [package]
 name = "abc-helper" # TODO: Change name when we decide on a good one.
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [dependencies]
