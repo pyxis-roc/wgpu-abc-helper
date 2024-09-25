@@ -323,8 +323,8 @@ pub enum AbcExpression {
     ),
     #[strum(to_string = "{0}")]
     Pred(Handle<Predicate>),
-    #[strum(to_string = "length({0}, {1})")]
-    ArrayLength(Handle<Var>, u8),
+    #[strum(to_string = "length({0})")]
+    ArrayLength(Handle<AbcExpression>),
     /// A function call, e.g., foo(x, y)
     /// This should correspond to a function that has been defined...
     #[strum(to_string = "{func}({args:?})")]
