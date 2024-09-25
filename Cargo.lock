@@ -4,11 +4,12 @@ version = 3
 
 [[package]]
 name = "abc-helper"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cbindgen",
  "ffi-support",
  "lazy_static",
+ "log",
  "rstest",
  "rustc-hash",
  "strum",

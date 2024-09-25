@@ -47,6 +47,8 @@ type FastHashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 
 use lazy_static::lazy_static;
 
+use log::info as log_info;
+
 // For right now, we are using handles. Later on, we might switch to an arena with actual handles.
 pub type Handle<T> = Arc<T>;
 
@@ -98,7 +100,7 @@ pub enum UnaryOp {
     Minus,
 }
 
-#[derive(strum_macros::Display, Debug, Clone, Copy)]
+#[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(C)]
 pub enum BinaryOp {
     #[strum(to_string = "+")]
@@ -144,6 +146,20 @@ pub enum CmpOp {
     Geq,
 }
 
+impl CmpOp {
+    /// Negate the predicate operation
+    pub fn negation(&self) -> Self {
+        match self {
+            CmpOp::Eq => CmpOp::Neq,
+            CmpOp::Neq => CmpOp::Eq,
+            CmpOp::Lt => CmpOp::Geq,
+            CmpOp::Gt => CmpOp::Leq,
+            CmpOp::Leq => CmpOp::Gt,
+            CmpOp::Geq => CmpOp::Lt,
+        }
+    }
+}
+
 /// A constraint operation is any comparison operator OR an assignment.
 #[derive(strum_macros::Display, Debug, Clone)]
 #[repr(C)]
@@ -160,20 +176,20 @@ pub enum ConstraintOp {
 pub enum Constraint {
     Assign {
         guard: Option<Handle<Predicate>>,
-        lhs: Handle<AbcExpression>,
-        rhs: Handle<AbcExpression>,
+        lhs: Term,
+        rhs: Term,
     },
 
     Cmp {
         guard: Option<Handle<Predicate>>,
-        lhs: Handle<AbcExpression>,
+        lhs: Term,
         op: CmpOp,
-        rhs: Handle<AbcExpression>,
+        rhs: Term,
     },
 
     Expression {
         guard: Option<Handle<Predicate>>,
-        term: Handle<AbcExpression>,
+        term: Term,
     },
 }
 
@@ -216,12 +232,10 @@ pub enum Predicate {
     Not(Handle<Predicate>),
     /// A comparison expression, e.g., x == y
     #[strum(to_string = "({1}) {0} ({2})")]
-    Comparison(CmpOp, Handle<AbcExpression>, Handle<AbcExpression>),
+    Comparison(CmpOp, Term, Term),
     /// A single variable, e.g. x. Variable should be a boolean.
     #[strum(to_string = "{0}")]
-    Unit(Handle<Var>),
-
-    Expression(Handle<AbcExpression>),
+    Unit(Term),
 
     /// The literal False predicate
     #[strum(to_string = "false")]
@@ -232,25 +246,55 @@ pub enum Predicate {
     True,
 }
 
+impl From<&Arc<Predicate>> for Term {
+    fn from(pred: &Arc<Predicate>) -> Self {
+        Term::Predicate(pred.clone())
+    }
+}
+
+impl From<&Term> for Term {
+    fn from(term: &Term) -> Self {
+        term.clone()
+    }
+}
+
+impl From<Arc<Predicate>> for Term {
+    fn from(pred: Arc<Predicate>) -> Self {
+        Term::Predicate(pred)
+    }
+}
+
+impl From<Predicate> for Term {
+    fn from(pred: Predicate) -> Self {
+        Term::Predicate(pred.into())
+    }
+}
+
+impl From<Term> for Arc<Predicate> {
+    fn from(term: Term) -> Self {
+        match term {
+            Term::Predicate(pred) => pred,
+            _ => Arc::new(Predicate::Unit(term)),
+        }
+    }
+}
+
+impl From<Term> for Predicate {
+    fn from(term: Term) -> Self {
+        match term {
+            Term::Predicate(pred) => pred.as_ref().clone(),
+            _ => Predicate::Unit(term),
+        }
+    }
+}
+
+impl From<&Term> for Predicate {
+    fn from(term: &Term) -> Self {
+        Predicate::Unit(term.clone())
+    }
+}
+
 impl Predicate {
-    /// Extract the predicate from an expression.
-    pub fn from_expression(expr: AbcExpression) -> Handle<Self> {
-        match expr {
-            AbcExpression::Pred(pred) => pred.clone(),
-            AbcExpression::Var(var) => Predicate::Unit(var).into(),
-            AbcExpression::Literal(t) if t == "true" => Predicate::True.into(),
-            AbcExpression::Literal(t) if t == "false" => Predicate::False.into(),
-            _ => Predicate::Expression(expr.into()).into(),
-        }
-    }
-    /// Extract the predicate from an expression handle.
-    pub fn from_expression_handle(expr: Handle<AbcExpression>) -> Handle<Self> {
-        match expr.as_ref() {
-            AbcExpression::Pred(pred) => pred.clone(),
-            AbcExpression::Var(var) => Predicate::Unit(var.clone()).into(),
-            _ => Predicate::Expression(expr.clone()).into(),
-        }
-    }
     pub fn new_and<T, U>(lhs: T, rhs: U) -> Handle<Self>
     where
         T: Into<Handle<Self>>,
@@ -287,163 +331,81 @@ impl Predicate {
             Predicate::Not(t) => t.clone(),
             Predicate::True => Predicate::False.into(),
             Predicate::False => Predicate::True.into(),
+            Predicate::Comparison(op, l, r) => {
+                Predicate::Comparison(op.negation(), l.clone(), r.clone()).into()
+            }
             _ => Predicate::Not(pred).into(),
         }
     }
 
-    pub fn new_comparison<T, U>(op: CmpOp, lhs: T, rhs: U) -> Self
-    where
-        T: Into<Handle<AbcExpression>>,
-        U: Into<Handle<AbcExpression>>,
-    {
-        Predicate::Comparison(op, lhs.into(), rhs.into())
+    pub fn new_comparison(op: CmpOp, lhs: Term, rhs: Term) -> Self {
+        Predicate::Comparison(op, lhs, rhs)
     }
 
-    pub fn new_unit<T>(var: T) -> Self
-    where
-        T: Into<Handle<Var>>,
-    {
+    pub fn new_unit<T: Into<Term>>(var: T) -> Self {
         Predicate::Unit(var.into())
     }
 }
 
-#[derive(strum_macros::Display, Debug)]
+#[derive(Debug)]
 pub enum AbcExpression {
-    #[strum(to_string = "{0}")]
-    Var(Handle<Var>),
-    #[strum(to_string = "{0}")]
     Literal(String),
-    #[strum(to_string = "({1} {0} {2})")]
-    BinaryOp(BinaryOp, Handle<AbcExpression>, Handle<AbcExpression>),
-    #[strum(to_string = "select({0}, {1}, {2})")]
-    Select(
-        Handle<Predicate>,
-        Handle<AbcExpression>,
-        Handle<AbcExpression>,
-    ),
-    #[strum(to_string = "{0}")]
-    Pred(Handle<Predicate>),
-    #[strum(to_string = "length({0})")]
-    ArrayLength(Handle<AbcExpression>),
+    BinaryOp(BinaryOp, Term, Term),
+    Select(Term, Term, Term),
+    ArrayLength(Term),
     /// A function call, e.g., foo(x, y)
     /// This should correspond to a function that has been defined...
-    #[strum(to_string = "{func}({args:?})")]
     Call {
         func: Handle<Summary>,
-        args: Vec<Handle<AbcExpression>>,
+        args: Vec<Term>,
     },
-    #[strum(to_string = "cast({0}, {1})")]
-    Cast(Handle<AbcExpression>, AbcScalar),
-    #[strum(to_string = "{base}.{fieldname}")]
+    Cast(Term, AbcScalar),
+
     FieldAccess {
-        base: Handle<AbcExpression>,
+        base: Term,
         ty: Handle<AbcType>,
         fieldname: String,
     },
-    #[strum(to_string = "{base}[{index}]")]
+
     IndexAccess {
-        base: Handle<AbcExpression>,
-        index: Handle<AbcExpression>,
+        base: Term,
+        index: Term,
     },
 
     /// The empty expression. This is meant to be used as a placeholder for constraint operations that have no expression.
     /// Displaying this is therefore a parse error.
-    #[strum(to_string = "%PARSE_ERROR")]
     Empty,
 }
 
-impl From<Handle<Var>> for AbcExpression {
-    fn from(var: Handle<Var>) -> Self {
-        AbcExpression::Var(var.clone())
-    }
-}
-
-impl From<Var> for AbcExpression {
-    fn from(var: Var) -> Self {
-        AbcExpression::Var(Arc::new(var))
-    }
-}
-
-impl From<Predicate> for AbcExpression {
-    fn from(pred: Predicate) -> Self {
-        AbcExpression::Pred(pred.into())
-    }
-}
-
-impl From<Handle<Predicate>> for AbcExpression {
-    fn from(pred: Handle<Predicate>) -> Self {
-        AbcExpression::Pred(pred)
-    }
-}
-
-impl AbcExpression {
-    pub fn new_call(func: Handle<Summary>, args: Vec<Handle<AbcExpression>>) -> Self {
-        AbcExpression::Call { func, args }
-    }
-    /// Wrapper around making a new predicate and placing the predicate in this expression.
-    pub fn new_cmp_op(op: CmpOp, lhs: Handle<AbcExpression>, rhs: Handle<AbcExpression>) -> Self {
-        AbcExpression::Pred(Predicate::new_comparison(op, lhs, rhs).into())
-    }
-
-    pub fn new_index_access(base: Handle<AbcExpression>, index: Handle<AbcExpression>) -> Self {
-        AbcExpression::IndexAccess { base, index }
-    }
-
-    /// Creates a new field access expression
-    pub fn new_struct_access(
-        base: Handle<AbcExpression>,
-        fieldname: String,
-        ty: Handle<AbcType>,
-    ) -> Self {
-        AbcExpression::FieldAccess {
-            base,
-            fieldname,
-            ty,
+impl std::fmt::Display for AbcExpression {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            AbcExpression::Literal(lit) => write!(f, "{}", lit),
+            AbcExpression::BinaryOp(op, lhs, rhs) => write!(f, "{} {} {}", lhs, op, rhs),
+            AbcExpression::Select(pred, then_expr, else_expr) => {
+                write!(f, "select({}, {}, {})", pred, then_expr, else_expr)
+            }
+            AbcExpression::ArrayLength(var) => write!(f, "length({})", var),
+            AbcExpression::Call { func, args } => {
+                write!(
+                    f,
+                    "{}({})",
+                    func,
+                    args.iter()
+                        .map(|x| x.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+            AbcExpression::Cast(expr, ty) => write!(f, "cast({}, {})", expr, ty),
+            AbcExpression::FieldAccess {
+                base, fieldname, ..
+            } => {
+                write!(f, "{}.{}", base, fieldname)
+            }
+            AbcExpression::IndexAccess { base, index } => write!(f, "{}[{}]", base, index),
+            AbcExpression::Empty => write!(f, "%PARSE_ERROR"),
         }
-    }
-    pub fn new_var<T>(var: T) -> Self
-    where
-        T: Into<Handle<Var>>,
-    {
-        AbcExpression::Var(var.into())
-    }
-
-    pub fn new_literal<T>(lit: T) -> Self
-    where
-        T: ToString,
-    {
-        AbcExpression::Literal(lit.to_string())
-    }
-
-    pub fn new_binary_op<T, U>(op: BinaryOp, lhs: T, rhs: U) -> Self
-    where
-        T: Into<Handle<AbcExpression>>,
-        U: Into<Handle<AbcExpression>>,
-    {
-        AbcExpression::BinaryOp(op, lhs.into(), rhs.into())
-    }
-
-    pub fn new_select<T, U, V>(pred: T, then_expr: U, else_expr: V) -> Self
-    where
-        T: Into<Handle<Predicate>>,
-        U: Into<Handle<AbcExpression>>,
-        V: Into<Handle<AbcExpression>>,
-    {
-        AbcExpression::Select(pred.into(), then_expr.into(), else_expr.into())
-    }
-
-    pub fn new_pred<T>(pred: T) -> Self
-    where
-        T: Into<Handle<Predicate>>,
-    {
-        AbcExpression::Pred(pred.into())
-    }
-
-    pub fn make_array_length<T>(var: T) -> Self
-    where
-        T: Into<Arc<AbcExpression>>,
-    {
-        AbcExpression::ArrayLength(var.into())
     }
 }
 
@@ -540,7 +502,7 @@ impl std::fmt::Display for AbcScalar {
 #[derive(Clone, Debug)]
 pub struct Summary {
     pub name: String,
-    pub nargs: u8,
+    pub args: Vec<Term>,
     pub return_type: Handle<AbcType>,
 
     // TODO: Make use of constraints.
@@ -557,23 +519,21 @@ impl std::fmt::Display for Summary {
 }
 
 impl Summary {
+    pub fn nargs(&self) -> u8 {
+        self.args.len() as u8
+    }
     pub fn new(name: String, nargs: u8) -> Self {
         Summary {
             name,
-            nargs,
+            args: Vec::with_capacity(nargs as usize),
             constraints: Vec::new(),
             return_type: NONETYPE.clone(),
         }
     }
 
-    /// Initialize a sumamry with a capacity for the number of constraints.
-    pub fn with_capacity(name: String, nargs: u8, capacity: usize) -> Self {
-        Summary {
-            name,
-            nargs,
-            constraints: Vec::with_capacity(capacity),
-            return_type: NONETYPE.clone(),
-        }
+    /// Add an argument to the summary.
+    pub(crate) fn add_argument(&mut self, arg: Term) {
+        self.args.push(arg);
     }
 
     pub fn add_constraint(&mut self, constraint: Constraint) {
@@ -584,12 +544,11 @@ impl Summary {
 // Ret is a special Arc that is guaranteed to hold a predicate
 
 lazy_static! {
-    static ref RET: Arc<Var> = Arc::new(Var {
+    static ref RET: Term = Term::Var(Arc::new(Var {
         name: "@ret".to_string()
-    });
-    static ref RET_EXPR: Arc<AbcExpression> = Arc::new(AbcExpression::Var(RET.clone()));
+    }));
     pub static ref NONETYPE: Arc<AbcType> = Arc::new(AbcType::NoneType);
-    pub static ref EMPTY_EXPR: Arc<AbcExpression> = Arc::new(AbcExpression::Empty);
+    pub static ref EMPTY_TERM: Term = Term::Expr(Arc::new(AbcExpression::Empty));
 }
 
 pub trait ConstraintInterface {
@@ -601,16 +560,19 @@ pub trait ConstraintInterface {
     /// Get the handle to an empty expression.
     ///
     /// This is provided since empty expression is meant to be a singleton.
-    fn empty_expression(&self) -> Self::Handle<AbcExpression>;
+    fn empty_expression(&self) -> Term;
 
     /// Get the handle for the NoneType
     fn none_type(&self) -> Self::Handle<AbcType>;
 
     /// Add an expression into the constraint system.
-    fn add_expression(
-        &mut self,
-        expr: AbcExpression,
-    ) -> Result<Self::Handle<AbcExpression>, Self::E>;
+    fn add_expression(&mut self, expr: AbcExpression) -> Result<Term, Self::E>;
+
+    /// Add an argument to the function summary
+    ///
+    /// Name is the name of the argument.
+    /// Returns a var handle.
+    fn add_argument(&mut self, name: String, ty: Self::Handle<AbcType>) -> Result<Term, Self::E>;
 
     /// Makes a call expression.
     ///
@@ -623,47 +585,38 @@ pub trait ConstraintInterface {
     fn make_call(
         &mut self,
         func: Self::Handle<Summary>,
-        args: Vec<Self::Handle<AbcExpression>>,
-        into: Option<Self::Handle<Var>>,
-    ) -> Result<Self::Handle<AbcExpression>, Self::E>;
+        args: Vec<Term>,
+        into: Option<Term>,
+    ) -> Result<Term, Self::E>;
 
     /// Add a new constraint to the constraint system. Any active predicates are applied to the constraint to "filter" the domain of its expression.
     ///
     /// Note: These will need to be desugared.
-    fn add_constraint(
-        &mut self,
-        lhs: Self::Handle<AbcExpression>,
-        op: ConstraintOp,
-        rhs: Self::Handle<AbcExpression>,
-    ) -> Result<(), Self::E>;
+    fn add_constraint(&mut self, lhs: Term, op: ConstraintOp, rhs: Term) -> Result<(), Self::E>;
 
     fn declare_type(&mut self, ty: AbcType) -> Result<Self::Handle<AbcType>, Self::E>;
 
     /// Add a new constraint to the constraint system, marked by `source`
     fn add_tracked_constraint<T: std::fmt::Debug>(
         &mut self,
-        lhs: Self::Handle<AbcExpression>,
+        lhs: Term,
         op: ConstraintOp,
-        rhs: Self::Handle<AbcExpression>,
+        rhs: Term,
         source: &T,
     ) -> Result<(), Self::E>;
 
     /// Declare the variable in the constraint system.
     ///
     /// This passes by value since the variable is replaced with a handle to it.
-    fn declare_var(&mut self, name: Var) -> Result<Self::Handle<Var>, Self::E>;
+    fn declare_var(&mut self, name: Var) -> Result<Term, Self::E>;
 
     /// Mark the type of a variable.
     /// If the type is an array, this will also mark the number of dimensions.
     /// If the type is an array with a fixed size, this will also mark the size of the array.
-    fn mark_type(
-        &mut self,
-        var: Self::Handle<Var>,
-        ty: self::Handle<AbcType>,
-    ) -> Result<(), Self::E>;
+    fn mark_type(&mut self, term: Term, ty: self::Handle<AbcType>) -> Result<(), Self::E>;
 
     /// Mark the length of a variable. The type of the variable must be a dynamic array.
-    fn mark_length(&mut self, var: Self::Handle<Var>, dim: u8, size: u64) -> Result<(), Self::E>;
+    fn mark_length(&mut self, var: Term, dim: u8, size: u64) -> Result<(), Self::E>;
 
     /// Mark a constraint, which is a predicate.
     fn mark_assumption(&mut self, assumption: Self::Handle<Predicate>) -> Result<(), Self::E>;
@@ -678,7 +631,7 @@ pub trait ConstraintInterface {
     /// mark all constraints as [p1 && p2] -> [c]
     /// That is, when determining if the constraint is violated, the solver
     /// will essentially check p -> c.
-    fn begin_predicate_block(&mut self, p: Self::Handle<Predicate>) -> Result<(), Self::E>;
+    fn begin_predicate_block(&mut self, p: Term) -> Result<(), Self::E>;
 
     /// End the active predicate block.
     ///
@@ -721,7 +674,7 @@ pub trait ConstraintInterface {
     /// From then on, any time a predicate block is closed, it is immediately enclosed
     /// within a new predicate block that inverts the conditions that were popped.
     ///
-    fn mark_return(&mut self, retval: Option<Self::Handle<AbcExpression>>) -> Result<(), Self::E>;
+    fn mark_return(&mut self, retval: Option<Term>) -> Result<(), Self::E>;
 
     fn mark_return_type(&mut self, ty: Self::Handle<AbcType>) -> Result<(), Self::E>;
 
@@ -739,8 +692,8 @@ pub trait ConstraintInterface {
     /// Marks a continue statement
     fn mark_continue(&mut self) -> Result<(), Self::E>;
 
-    /// Mark the range of a variable.
-    fn mark_range<T>(&mut self, var: Handle<Var>, low: T, high: T) -> Result<(), Self::E>
+    /// Mark the range of a term.
+    fn mark_range<T>(&mut self, var: Term, low: T, high: T) -> Result<(), Self::E>
     where
         T: ToString;
 
@@ -752,6 +705,197 @@ pub trait ConstraintInterface {
 // Finally, I need a container for my expressions?
 
 // Then I can give all of these things to the helper?
+
+/// A term is used to capture both variables and expressions
+///
+/// It makes marking constraints easier, as this allows
+/// for both to be used interchangably.\
+///
+/// It also simplifies the logic for storing references to variables.
+///
+/// Sometimes, we would like to be able to use a variable as a constraint.
+#[derive(Clone, Debug, strum_macros::Display)]
+pub enum Term {
+    #[strum(to_string = "{0}")]
+    Expr(Handle<AbcExpression>),
+    #[strum(to_string = "{0}")]
+    Var(Handle<Var>),
+    #[strum(to_string = "{0}")]
+    Literal(String),
+    Predicate(Handle<Predicate>),
+}
+
+// `true` and `false` are predicates
+// A predicate is really any expression that evaluates to a boolean.
+impl From<bool> for Term {
+    fn from(val: bool) -> Self {
+        Self::Predicate(if val {
+            Predicate::True.into()
+        } else {
+            Predicate::False.into()
+        })
+    }
+}
+
+impl From<u32> for Term {
+    fn from(val: u32) -> Self {
+        Term::Literal(val.to_string())
+    }
+}
+
+impl From<i32> for Term {
+    fn from(val: i32) -> Self {
+        Term::Literal(val.to_string())
+    }
+}
+
+impl From<u64> for Term {
+    fn from(val: u64) -> Self {
+        Term::Literal(val.to_string())
+    }
+}
+
+impl From<i64> for Term {
+    fn from(val: i64) -> Self {
+        Term::Literal(val.to_string())
+    }
+}
+
+impl From<f32> for Term {
+    fn from(val: f32) -> Self {
+        Term::Literal(val.to_string())
+    }
+}
+
+impl From<f64> for Term {
+    fn from(val: f64) -> Self {
+        Term::Literal(val.to_string())
+    }
+}
+
+/*
+Implementation of predicate constructors for term
+*/
+
+impl Term {
+    /// Creates lhs && rhs
+    pub fn new_logical_and(lhs: Term, rhs: Term) -> Self {
+        Term::Predicate(Predicate::new_and(lhs, rhs).into())
+    }
+
+    /// Constructs lhs || rhs
+    pub fn new_logical_or(lhs: Term, rhs: Term) -> Self {
+        Term::Predicate(Predicate::new_or(lhs, rhs).into())
+    }
+
+    /// Constructs lhs `op` rhs
+    pub fn new_comparison(op: CmpOp, lhs: Term, rhs: Term) -> Self {
+        Term::Predicate(Predicate::new_comparison(op, lhs, rhs).into())
+    }
+
+    /// Constructs !t
+    ///
+    /// If `t` is already a [`Predicate::Not`], then it removes the `!`
+    ///
+    /// [`Predicate::Not`]: crate::Predicate::Not
+    pub fn new_not(t: Term) -> Self {
+        Term::Predicate(match t {
+            Term::Predicate(pred) => Predicate::new_not(pred),
+            _ => Predicate::new_not(Predicate::new_unit(t)),
+        })
+    }
+}
+
+impl Term {
+    /// Make a `Not` expression.
+    ///
+    /// This will always return the `Predicate` variant.
+
+    pub fn new_var<T>(var: T) -> Self
+    where
+        T: Into<Handle<Var>>,
+    {
+        Term::Var(var.into())
+    }
+
+    pub fn new_expr<T>(expr: T) -> Self
+    where
+        T: Into<Handle<AbcExpression>>,
+    {
+        Term::Expr(expr.into())
+    }
+
+    pub fn new_call(func: Handle<Summary>, args: Vec<Term>) -> Self {
+        Term::Expr(AbcExpression::Call { func, args }.into())
+    }
+    /// Wrapper around making a new predicate and placing the predicate in this expression.
+    pub fn new_cmp_op(op: CmpOp, lhs: Term, rhs: Term) -> Self {
+        Term::Predicate(Predicate::new_comparison(op, lhs, rhs).into())
+    }
+
+    pub fn new_index_access(base: Term, index: Term) -> Self {
+        AbcExpression::IndexAccess { base, index }.into()
+    }
+
+    /// Creates a new field access expression
+    pub fn new_struct_access(base: Term, fieldname: String, ty: Handle<AbcType>) -> Self {
+        AbcExpression::FieldAccess {
+            base,
+            fieldname,
+            ty,
+        }
+        .into()
+    }
+
+    pub fn new_literal<T>(lit: T) -> Self
+    where
+        T: ToString,
+    {
+        AbcExpression::Literal(lit.to_string()).into()
+    }
+
+    pub fn new_binary_op(op: BinaryOp, lhs: Term, rhs: Term) -> Self {
+        AbcExpression::BinaryOp(op, lhs, rhs).into()
+    }
+
+    pub fn new_select(pred: Term, then_expr: Term, else_expr: Term) -> Self {
+        // In select, term *should* be a predicate.
+        // Otherwise, we have to make it into one.
+        let pred = Term::Predicate(match pred {
+            Term::Predicate(p) => p.clone(),
+            _ => Predicate::new_unit(pred).into(),
+        });
+        AbcExpression::Select(pred, then_expr.into(), else_expr.into()).into()
+    }
+
+    pub fn make_array_length(var: Term) -> Self {
+        AbcExpression::ArrayLength(var).into()
+    }
+}
+
+impl From<AbcExpression> for Term {
+    fn from(expr: AbcExpression) -> Self {
+        Term::Expr(Arc::new(expr))
+    }
+}
+
+impl From<Var> for Term {
+    fn from(var: Var) -> Self {
+        Term::Var(Arc::new(var))
+    }
+}
+
+impl From<Handle<AbcExpression>> for Term {
+    fn from(expr: Handle<AbcExpression>) -> Self {
+        Term::Expr(expr)
+    }
+}
+
+impl From<Handle<Var>> for Term {
+    fn from(var: Handle<Var>) -> Self {
+        Term::Var(var)
+    }
+}
 
 #[derive(Default)]
 pub struct ConstraintHelper {
@@ -878,8 +1022,8 @@ impl ConstraintHelper {
     #[allow(unused)]
     /// Mark the length of a dimension
     /// Not sure if this is even needed, honestly.
-    fn mark_ndim(&mut self, var: Handle<Var>, ndim: u8) {
-        self.write(format!("ndim({var}) = {ndim}"));
+    fn mark_ndim(&mut self, term: Term, ndim: u8) {
+        self.write(format!("ndim({term}) = {ndim}"));
     }
 
     pub fn write_to_stream(
@@ -905,8 +1049,8 @@ impl ConstraintInterface for ConstraintHelper {
     /// A reference to the empty expression in this constraint system.
     ///
     /// The empty expression is meant to be a singleton, and this provides a wrapper to reference it.
-    fn empty_expression(&self) -> Self::Handle<AbcExpression> {
-        EMPTY_EXPR.clone()
+    fn empty_expression(&self) -> Term {
+        EMPTY_TERM.clone()
     }
     /// A reference to the NoneType in this constraint system.
     ///
@@ -930,23 +1074,40 @@ impl ConstraintInterface for ConstraintHelper {
     fn make_call(
         &mut self,
         func: Self::Handle<Summary>,
-        args: Vec<Self::Handle<AbcExpression>>,
-        into: Option<Self::Handle<Var>>,
-    ) -> Result<Self::Handle<AbcExpression>, Self::E> {
+        args: Vec<Term>,
+        into: Option<Term>,
+    ) -> Result<Term, Self::E> {
         // We have to add the constraints from the summary.
         // For now, we don't do this, but we will have to on the desugaring pass.
-        let call = self.add_expression(AbcExpression::new_call(func.clone(), args))?;
+        let call = self.add_expression(AbcExpression::Call {
+            func: func.clone(),
+            args,
+        })?;
 
         if let Some(into) = into {
             // Turn the var into an expression, and return said expression.
-            let var_as_expr = self.add_expression(AbcExpression::Var(into.clone()))?;
             self.mark_type(into.clone(), func.return_type.clone())?;
-            self.add_constraint(var_as_expr.clone(), ConstraintOp::Assign, call)?;
-            Ok(var_as_expr)
+            self.add_constraint(into.clone(), ConstraintOp::Assign, call)?;
+            Ok(into)
         } else {
             // At this point, we need to add the constraints of all of the terms in the function.
-            self.add_constraint(call.clone(), ConstraintOp::Unary, EMPTY_EXPR.clone())?;
+            self.add_constraint(call.clone(), ConstraintOp::Unary, EMPTY_TERM.clone())?;
             Ok(call)
+        }
+    }
+
+    fn add_argument(&mut self, name: String, ty: Self::Handle<AbcType>) -> Result<Term, Self::E> {
+        let mut argname = String::with_capacity(name.len() + 1);
+        argname.push('@');
+        argname.push_str(&name);
+        let var = self.declare_var(Var { name: argname })?;
+        self.mark_type(var.clone(), ty)?;
+        match self.active_summary {
+            Some(ref mut summary) => {
+                summary.add_argument(var.clone());
+                Ok(var)
+            }
+            None => Err(ConstraintError::SummaryError),
         }
     }
 
@@ -954,21 +1115,18 @@ impl ConstraintInterface for ConstraintHelper {
     ///
     /// # Errors
     /// Never (always returns an Ok)
-    fn add_expression(
-        &mut self,
-        expr: AbcExpression,
-    ) -> Result<Self::Handle<AbcExpression>, Self::E> {
-        Ok(Arc::new(expr))
+    /// fn
+    fn add_expression(&mut self, expr: AbcExpression) -> Result<Term, Self::E> {
+        Ok(Term::Expr(expr.into()))
     }
+
     /// Create a new variable, returning a handle to that variable.
     ///
     /// The interface for variables may change in the future so it is recommended to use this instead..
     /// We won't do anything about expressions
     /// These will have to be created.
-    fn declare_var(&mut self, name: Var) -> Result<Self::Handle<Var>, ConstraintError> {
-        Ok(Arc::new(Var {
-            name: name.to_string(),
-        }))
+    fn declare_var(&mut self, name: Var) -> Result<Term, ConstraintError> {
+        Ok(Term::Var(Arc::new(name)))
     }
 
     fn mark_break(&mut self) -> Result<(), Self::E> {
@@ -979,17 +1137,8 @@ impl ConstraintInterface for ConstraintHelper {
         Err(ConstraintError::NotImplemented("continue".to_string()))
     }
 
-    /// Mark the type of the variable, returning a handle to that variable.
-    /// Var can be either an existing Var, a handle to a Var, or a string. If it is a string, then a new var is created.
-    /// Otherwise, the existing var is used.
-    /// Right now, type expects a string. This may be changed in the future
-    /// Sized arrays are specified as [ty; N] where N is the size of the array.
-    /// Nested arrays are specified as [[ty; N]; M] where N is the size of the inner array and M is the size of the outer array.
-    fn mark_type(
-        &mut self,
-        var: Self::Handle<Var>,
-        ty: Self::Handle<AbcType>,
-    ) -> Result<(), Self::E> {
+    /// Mark the type of the variable.
+    fn mark_type(&mut self, var: Term, ty: Self::Handle<AbcType>) -> Result<(), Self::E> {
         // If we are already given a handle, then we just use that
         // Otherwise, if we are given a string, then we create a new var.
 
@@ -1015,9 +1164,9 @@ impl ConstraintInterface for ConstraintHelper {
 
     fn add_tracked_constraint<T: std::fmt::Debug>(
         &mut self,
-        term: Self::Handle<AbcExpression>,
+        term: Term,
         op: ConstraintOp,
-        rhs: Self::Handle<AbcExpression>,
+        rhs: Term,
         source: &T,
     ) -> Result<(), Self::E> {
         // self.write(format!("/* {:?} */", source));
@@ -1033,12 +1182,7 @@ impl ConstraintInterface for ConstraintHelper {
     ///
     /// If source is given and not none, then the source is used to provide context for the constraint.
     /// It really should implement the ToString trait.
-    fn add_constraint(
-        &mut self,
-        term: Self::Handle<AbcExpression>,
-        op: ConstraintOp,
-        rhs: Self::Handle<AbcExpression>,
-    ) -> Result<(), Self::E> {
+    fn add_constraint(&mut self, term: Term, op: ConstraintOp, rhs: Term) -> Result<(), Self::E> {
         // build the predicate. To start with, we have the permanent predicate
         // Then, we have the AND of the current predicate stack.
 
@@ -1046,7 +1190,7 @@ impl ConstraintInterface for ConstraintHelper {
         let new_constraint = match op {
             ConstraintOp::Unary => Constraint::Expression { guard, term },
             // An empty rhs is not allowed unless this is a unary constraint.
-            _ if matches!(rhs.as_ref(), AbcExpression::Empty) => {
+            _ if matches!(rhs, Term::Expr(ref e) if matches!(e.as_ref(), AbcExpression::Empty)) => {
                 return Err(ConstraintError::EmptyExpression);
             }
             ConstraintOp::Assign => Constraint::Assign {
@@ -1080,20 +1224,13 @@ impl ConstraintInterface for ConstraintHelper {
     }
 
     /// When we encounter a return, push the current predicate on the current, if there is a current predicate stack...
-    fn mark_return(
-        &mut self,
-        retval: Option<Self::Handle<AbcExpression>>,
-    ) -> Result<(), ConstraintError> {
+    fn mark_return(&mut self, retval: Option<Term>) -> Result<(), ConstraintError> {
         if self.active_summary.is_none() {
             return Err(ConstraintError::SummaryError);
         }
         // Add the constraint on retval, if there is a retval.
         if let Some(expr) = retval {
-            self.add_constraint(
-                AbcExpression::new_var(RET.clone()).into(),
-                ConstraintOp::Assign,
-                expr,
-            )?;
+            self.add_constraint(RET.clone(), ConstraintOp::Assign, expr)?;
         }
         // It is likely an error if the return predicate already exists and is not None,
         // But just in case, we will make the return predicate the `or` of the current predicate stack...
@@ -1122,13 +1259,13 @@ impl ConstraintInterface for ConstraintHelper {
     }
 
     /// Mark the length of an array's dimension. Used for arrays with a fixed size.
-    fn mark_length(&mut self, var: Handle<Var>, dim: u8, size: u64) -> Result<(), ConstraintError> {
+    fn mark_length(&mut self, var: Term, dim: u8, size: u64) -> Result<(), ConstraintError> {
         self.write(format!("length({var}, {dim}) = {size}"));
         Ok(())
     }
 
     /// Mark the range of a variable. This works as an assumption when the range of a variable is fixed.
-    fn mark_range<T>(&mut self, var: Handle<Var>, low: T, high: T) -> Result<(), ConstraintError>
+    fn mark_range<T>(&mut self, var: Term, low: T, high: T) -> Result<(), ConstraintError>
     where
         T: ToString,
     {
@@ -1139,11 +1276,16 @@ impl ConstraintInterface for ConstraintHelper {
         ));
         Ok(())
     }
+
     /// Push a predicate block onto the stack
-    fn begin_predicate_block(&mut self, p: Handle<Predicate>) -> Result<(), ConstraintError> {
+    fn begin_predicate_block(&mut self, p: Term) -> Result<(), ConstraintError> {
         // In this form, every subsequent constraint we add is guarded by the conjunction of each predicate...
-        self.write(format!("begin_predicate_block({})", p.as_ref()));
-        self.predicate_stack.push(p.clone());
+        let pred: Self::Handle<Predicate> = match p {
+            Term::Predicate(p) => p,
+            _ => Predicate::new_unit(p).into(),
+        };
+        log_info!("Beginning predicate block: {}", pred.as_ref());
+        self.predicate_stack.push(pred);
         Ok(())
     }
 
@@ -1165,7 +1307,7 @@ impl ConstraintInterface for ConstraintHelper {
     /// Returns an error if the predicate stack is empty.
     fn end_predicate_block(&mut self) -> Result<(), ConstraintError> {
         // Predicate block is sugar. It disappears, so there should be no use for it...
-        self.write("pop_predicate()".to_string());
+        log_info!("Popping predicate");
         // Make the permanent predicate the negation of the current predicate.
 
         // If we currently have a return predicate, then the permanent predicate becomes the And of the current permanent predicate and the negation of the return predicate.
@@ -1218,13 +1360,12 @@ impl ConstraintInterface for ConstraintHelper {
     #[inline]
     fn begin_summary(&mut self, name: String, nargs: u8) -> Result<(), ConstraintError> {
         // Mini optimization for allocating the perfect amount of characters needed for the string
-        let str_len = 15
+        let str_len = 17
             + name.len()
             + match nargs {
-                0 => 0,
-                1..=9 => 6 * (nargs as usize),
-                10..=99 => 54 + 7 * (nargs as usize - 9),
-                100..=255 => 684 + 8 * (nargs as usize - 99),
+                0..=9 => 1,
+                10..=99 => 2,
+                100..=255 => 3,
             };
 
         // The most efficient way to construct a string in rust.
@@ -1232,15 +1373,15 @@ impl ConstraintInterface for ConstraintHelper {
 
         param_list_str.push_str("begin_summary(");
         param_list_str.push_str(&name);
+        param_list_str.push_str(", ");
+        param_list_str.push_str(&nargs.to_string());
+        param_list_str.push(')');
+        self.write(param_list_str);
 
-        for i in 1..=nargs {
-            param_list_str.push_str(", arg");
-            param_list_str.push_str(&i.to_string());
-        }
         // Create a new summary
         let new_summary = Summary {
             name,
-            nargs,
+            args: Vec::with_capacity(nargs as usize),
             constraints: Vec::new(),
             return_type: NONETYPE.clone(),
         };
@@ -1283,7 +1424,7 @@ mod tests {
         ConstraintHelper::default()
     }
 
-    fn fresh_var(constraint_helper: &mut ConstraintHelper, name: String) -> Handle<Var> {
+    fn fresh_var(constraint_helper: &mut ConstraintHelper, name: String) -> Term {
         constraint_helper.declare_var(name.into()).unwrap()
     }
 
@@ -1329,6 +1470,13 @@ mod tests {
         let p = Predicate::new_not(Predicate::new_unit(var_x));
         let p2 = Predicate::new_not(p);
         assert_eq!(p2.to_string(), "x");
+    }
+
+    // Test terms.
+    #[rstest]
+    fn test_term_from_var(var_x: Var) {
+        let term = Term::from(var_x.clone());
+        assert_eq!(term.to_string(), "x");
     }
 }
 
