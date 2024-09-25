@@ -153,7 +153,7 @@ pub enum ConstraintOp {
     #[strum(to_string = "{0}")]
     Cmp(CmpOp),
     #[strum(to_string = "UnaryConstraint")]
-    Unary
+    Unary,
 }
 
 #[derive(Debug, Clone)]
@@ -246,7 +246,7 @@ impl Predicate {
     /// Extract the predicate from an expression handle.
     pub fn from_expression_handle(expr: Handle<AbcExpression>) -> Handle<Self> {
         match expr.as_ref() {
-            AbcExpression::Pred(pred) => pred.clone().into(),
+            AbcExpression::Pred(pred) => pred.clone(),
             AbcExpression::Var(var) => Predicate::Unit(var.clone()).into(),
             _ => Predicate::Expression(expr.clone()).into(),
         }
@@ -349,7 +349,7 @@ pub enum AbcExpression {
     /// The empty expression. This is meant to be used as a placeholder for constraint operations that have no expression.
     /// Displaying this is therefore a parse error.
     #[strum(to_string = "%PARSE_ERROR")]
-    Empty
+    Empty,
 }
 
 impl From<Handle<Var>> for AbcExpression {
@@ -588,9 +588,7 @@ lazy_static! {
         name: "@ret".to_string()
     });
     static ref RET_EXPR: Arc<AbcExpression> = Arc::new(AbcExpression::Var(RET.clone()));
-
     pub static ref NONETYPE: Arc<AbcType> = Arc::new(AbcType::NoneType);
-
     pub static ref EMPTY_EXPR: Arc<AbcExpression> = Arc::new(AbcExpression::Empty);
 }
 
@@ -600,12 +598,10 @@ pub trait ConstraintInterface {
     /// The error type for the constraint interface
     type E;
 
-
     /// Get the handle to an empty expression.
-    /// 
+    ///
     /// This is provided since empty expression is meant to be a singleton.
     fn empty_expression(&self) -> Self::Handle<AbcExpression>;
-
 
     /// Get the handle for the NoneType
     fn none_type(&self) -> Self::Handle<AbcType>;
@@ -616,14 +612,13 @@ pub trait ConstraintInterface {
         expr: AbcExpression,
     ) -> Result<Self::Handle<AbcExpression>, Self::E>;
 
-
     /// Makes a call expression.
-    /// 
+    ///
     /// # Arguments
     /// * `func` - A handle to the function that is being invoked
     /// * `args` - The arguments to the function
     /// * `into` - If the result of the function is used, this is the variable that holds it.
-    /// 
+    ///
     /// This returns a handle to the expression that allows it to be used in other expressions
     fn make_call(
         &mut self,
@@ -826,6 +821,11 @@ pub struct ConstraintHelper {
     /// Global constraints not tied to a function
     global_constraints: Vec<Constraint>,
 
+    /// Expression counters.
+    /// This is a map from an expression to the counter for its current value.
+    #[allow(dead_code)]
+    expression_ssa_counter: FastHashMap<Handle<AbcExpression>, u32>,
+
     /// The number of loop layers that are active.
     ///
     /// Incremented when a loop begins, decremented when a loop ends.
@@ -902,23 +902,31 @@ impl ConstraintInterface for ConstraintHelper {
     type Handle<T> = std::sync::Arc<T>;
     type E = ConstraintError;
 
-
+    /// A reference to the empty expression in this constraint system.
+    ///
+    /// The empty expression is meant to be a singleton, and this provides a wrapper to reference it.
     fn empty_expression(&self) -> Self::Handle<AbcExpression> {
         EMPTY_EXPR.clone()
     }
     /// A reference to the NoneType in this constraint system.
-    /// 
-    /// Nonetype is meant to be a singleton, as it is always equivalent to others.
+    ///
+    /// Nonetype is meant to be a singleton, and this provides a wrapper to reference it.
     fn none_type(&self) -> Self::Handle<AbcType> {
         NONETYPE.clone()
     }
 
+    /// Define a type that is used in the summary.
+    ///
+    /// This returns a handle that can be used to refer to the type.
     fn declare_type(&mut self, ty: AbcType) -> Result<Self::Handle<AbcType>, Self::E> {
         let ty: Self::Handle<AbcType> = ty.into();
         self.types.push(ty.clone());
         Ok(ty)
     }
-    
+
+    /// Add the constraints of the summary by invoking the function call with the proper arguments.
+    ///
+    /// This will add the constraints of the summary to the constraint system.
     fn make_call(
         &mut self,
         func: Self::Handle<Summary>,
@@ -940,7 +948,6 @@ impl ConstraintInterface for ConstraintHelper {
             self.add_constraint(call.clone(), ConstraintOp::Unary, EMPTY_EXPR.clone())?;
             Ok(call)
         }
-        
     }
 
     /// Add an expression to the constraint system, returning a handle to it.
@@ -1037,9 +1044,7 @@ impl ConstraintInterface for ConstraintHelper {
 
         let guard = self.make_guard();
         let new_constraint = match op {
-            ConstraintOp::Unary => {
-                Constraint::Expression { guard, term }
-            }
+            ConstraintOp::Unary => Constraint::Expression { guard, term },
             // An empty rhs is not allowed unless this is a unary constraint.
             _ if matches!(rhs.as_ref(), AbcExpression::Empty) => {
                 return Err(ConstraintError::EmptyExpression);
@@ -1058,9 +1063,10 @@ impl ConstraintInterface for ConstraintHelper {
             // Allow sus to add constraints in the future without having to implement them.
             #[allow(unreachable_patterns)]
             _ => {
-                return Err(ConstraintError::NotImplemented(
-                    format!("ConstraintOp::{:?}", op),
-                ))
+                return Err(ConstraintError::NotImplemented(format!(
+                    "ConstraintOp::{:?}",
+                    op
+                )))
             }
         };
         self.write(new_constraint.to_string());
@@ -1180,18 +1186,6 @@ impl ConstraintInterface for ConstraintHelper {
             .map_or(Err(ConstraintError::PredicateStackEmpty), |_| Ok(()))
     }
 
-    // /// Mark an assignment
-    // /// This is only used for stores to variables that will be loaded later.
-    // /// If this is done within a loop context, then the variable is marked with a range constraint
-    // /// Otherwise, it is marked wit
-    // fn mark_assignment(&mut self, var: Self::Handle<Var>, rhs: Self::Handle<AbcExpression>) {
-    //     if self.in_loop {
-    //         self.write(format!("range({var}) \\in {rhs}"));
-    //     } else {
-    //         self.write(format!("{var} = {rhs}"));
-    //     }
-    // }
-
     /// Begins a loop context.
     /// When we are inside of a loop context, any update to a variable is marked as a range constraint.
     /// It also allows for special handling of break and continue statements.
@@ -1250,7 +1244,7 @@ impl ConstraintInterface for ConstraintHelper {
             constraints: Vec::new(),
             return_type: NONETYPE.clone(),
         };
-        self.active_summary = Some(new_summary.into());
+        self.active_summary = Some(new_summary);
 
         Ok(())
     }
