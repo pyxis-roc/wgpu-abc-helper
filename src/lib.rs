@@ -780,12 +780,12 @@ Implementation of predicate constructors for term
 impl Term {
     /// Creates lhs && rhs
     pub fn new_logical_and(lhs: Term, rhs: Term) -> Self {
-        Term::Predicate(Predicate::new_and(lhs, rhs).into())
+        Term::Predicate(Predicate::new_and(lhs, rhs))
     }
 
     /// Constructs lhs || rhs
     pub fn new_logical_or(lhs: Term, rhs: Term) -> Self {
-        Term::Predicate(Predicate::new_or(lhs, rhs).into())
+        Term::Predicate(Predicate::new_or(lhs, rhs))
     }
 
     /// Constructs lhs `op` rhs
@@ -865,7 +865,7 @@ impl Term {
             Term::Predicate(p) => p.clone(),
             _ => Predicate::new_unit(pred).into(),
         });
-        AbcExpression::Select(pred, then_expr.into(), else_expr.into()).into()
+        AbcExpression::Select(pred, then_expr, else_expr).into()
     }
 
     pub fn make_array_length(var: Term) -> Self {
