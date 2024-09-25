@@ -1,12 +1,11 @@
 repos:
-  - repo: local
+  - repo: https://github.com/backplane/pre-commit-rust-hooks
+    rev: v1.1.0
     hooks:
-      - id: fmt
-        name: cargo fmt
-        description: format files with "cargo fmt"
-        types:
-          - rust
-        language: system
-        entry: cargo fmt
-        args:
-          - --
+    -   id: fmt
+    -   id: check
+    -   id: clippy
+  - repo: https://github.com/fsfe/reuse-tool
+    rev: v4.0.3
+    hooks:
+      - id: reuse-lint-file
