@@ -439,11 +439,11 @@ impl AbcExpression {
         AbcExpression::Pred(pred.into())
     }
 
-    pub fn make_array_length<T>(var: T, dim: u8) -> Self
+    pub fn make_array_length<T>(var: T) -> Self
     where
-        T: Into<Arc<Var>>,
+        T: Into<Arc<AbcExpression>>,
     {
-        AbcExpression::ArrayLength(var.into(), dim)
+        AbcExpression::ArrayLength(var.into())
     }
 }
 
