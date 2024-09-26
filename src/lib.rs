@@ -349,8 +349,8 @@ impl Predicate {
 
 #[derive(Debug)]
 pub enum AbcExpression {
-    Literal(String),
     BinaryOp(BinaryOp, Term, Term),
+    /// A select expression, e.g., select(x, y, z)
     Select(Term, Term, Term),
     ArrayLength(Term),
     /// A function call, e.g., foo(x, y)
@@ -359,14 +359,18 @@ pub enum AbcExpression {
         func: Handle<Summary>,
         args: Vec<Term>,
     },
+
+    /// Cast a term to a scalar type, e.g. `i32(x)`
     Cast(Term, AbcScalar),
 
+    /// Access a member of a struct, e.g. `x.y`
     FieldAccess {
         base: Term,
         ty: Handle<AbcType>,
         fieldname: String,
     },
 
+    /// Access an element of an array, e.g. `x[3]`
     IndexAccess {
         base: Term,
         index: Term,
@@ -380,7 +384,6 @@ pub enum AbcExpression {
 impl std::fmt::Display for AbcExpression {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            AbcExpression::Literal(lit) => write!(f, "{}", lit),
             AbcExpression::BinaryOp(op, lhs, rhs) => write!(f, "{} {} {}", lhs, op, rhs),
             AbcExpression::Select(pred, then_expr, else_expr) => {
                 write!(f, "select({}, {}, {})", pred, then_expr, else_expr)
@@ -851,7 +854,7 @@ impl Term {
     where
         T: ToString,
     {
-        AbcExpression::Literal(lit.to_string()).into()
+        Self::Literal(lit.to_string())
     }
 
     pub fn new_binary_op(op: BinaryOp, lhs: Term, rhs: Term) -> Self {
