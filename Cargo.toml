@@ -7,7 +7,6 @@ version = "0.1.1"
 edition = "2021"
 
 [dependencies]
-ffi-support = {version = "0.4.4", optional = true}
 lazy_static = { version = "1.4.0"}
 strum = "0.26.3"
 strum_macros = "0.26.4"
@@ -20,9 +19,6 @@ cbindgen = {version = "0.24.0", optional = true}
 
 [lib]
 crate-type = ["cdylib", "rlib"]
-
-[features]
-cffi = ["dep:ffi-support", "dep:cbindgen"]
 
 [dev-dependencies]
 rstest = "0.22.0"
