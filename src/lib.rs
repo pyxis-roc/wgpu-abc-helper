@@ -18,7 +18,7 @@ A constraint helper consists of:
 
 ## Function Summaries
 
-AbcHelper's summaries capture the constraints within a function that must be met
+`AbcHelper`'s summaries capture the constraints within a function that must be met
 in order for the array accesses to be in bounds. It also generates constraints that
 narrow the return value of the function.
 
@@ -148,6 +148,7 @@ pub enum CmpOp {
 
 impl CmpOp {
     /// Negate the predicate operation
+    #[must_use]
     pub fn negation(&self) -> Self {
         match self {
             CmpOp::Eq => CmpOp::Neq,
@@ -197,9 +198,9 @@ impl Constraint {
     /// Return the guard portion of the constraint
     fn guard(&self) -> Option<Handle<Predicate>> {
         match self {
-            Constraint::Assign { guard, .. } => guard.clone(),
-            Constraint::Cmp { guard, .. } => guard.clone(),
-            Constraint::Expression { guard, .. } => guard.clone(),
+            Constraint::Assign { guard, .. }
+            | Constraint::Cmp { guard, .. }
+            | Constraint::Expression { guard, .. } => guard.clone(),
         }
     }
 }
@@ -338,6 +339,7 @@ impl Predicate {
         }
     }
 
+    #[must_use]
     pub fn new_comparison(op: CmpOp, lhs: Term, rhs: Term) -> Self {
         Predicate::Comparison(op, lhs, rhs)
     }
@@ -384,29 +386,29 @@ pub enum AbcExpression {
 impl std::fmt::Display for AbcExpression {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            AbcExpression::BinaryOp(op, lhs, rhs) => write!(f, "{} {} {}", lhs, op, rhs),
+            AbcExpression::BinaryOp(op, lhs, rhs) => write!(f, "{lhs} {op} {rhs}"),
             AbcExpression::Select(pred, then_expr, else_expr) => {
-                write!(f, "select({}, {}, {})", pred, then_expr, else_expr)
+                write!(f, "select({pred}, {then_expr}, {else_expr})")
             }
-            AbcExpression::ArrayLength(var) => write!(f, "length({})", var),
+            AbcExpression::ArrayLength(var) => write!(f, "length({var})"),
             AbcExpression::Call { func, args } => {
                 write!(
                     f,
                     "{}({})",
                     func,
                     args.iter()
-                        .map(|x| x.to_string())
+                        .map(std::string::ToString::to_string)
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
             }
-            AbcExpression::Cast(expr, ty) => write!(f, "cast({}, {})", expr, ty),
+            AbcExpression::Cast(expr, ty) => write!(f, "cast({expr}, {ty})"),
             AbcExpression::FieldAccess {
                 base, fieldname, ..
             } => {
-                write!(f, "{}.{}", base, fieldname)
+                write!(f, "{base}.{fieldname}")
             }
-            AbcExpression::IndexAccess { base, index } => write!(f, "{}[{}]", base, index),
+            AbcExpression::IndexAccess { base, index } => write!(f, "{base}[{index}]"),
             AbcExpression::Empty => write!(f, "%PARSE_ERROR"),
         }
     }
@@ -452,13 +454,13 @@ impl std::fmt::Display for AbcType {
         match self {
             AbcType::Struct { members } => {
                 write!(f, "{{")?;
-                for (name, ty) in members.iter() {
-                    write!(f, "{}: {}, ", name, ty)?;
+                for (name, ty) in members {
+                    write!(f, "{name}: {ty}, ")?;
                 }
                 write!(f, "}}")
             }
-            AbcType::SizedArray { ty, size } => write!(f, "[{}; {}]", ty, size),
-            AbcType::DynamicArray { ty } => write!(f, "[{}]", ty),
+            AbcType::SizedArray { ty, size } => write!(f, "[{ty}; {size}]"),
+            AbcType::DynamicArray { ty } => write!(f, "[{ty}]"),
             AbcType::Scalar(scalar) => f.write_str(&scalar.to_string()),
             AbcType::NoneType => f.write_str("NoneType"),
         }
@@ -522,9 +524,12 @@ impl std::fmt::Display for Summary {
 }
 
 impl Summary {
+    #[allow(clippy::cast_possible_truncation)]
+    #[must_use]
     pub fn nargs(&self) -> u8 {
         self.args.len() as u8
     }
+    #[must_use]
     pub fn new(name: String, nargs: u8) -> Self {
         Summary {
             name,
@@ -554,6 +559,7 @@ lazy_static! {
     pub static ref EMPTY_TERM: Term = Term::Expr(Arc::new(AbcExpression::Empty));
 }
 
+#[allow(clippy::missing_errors_doc)]
 pub trait ConstraintInterface {
     /// Can be used to reference an element of the constraint system.
     type Handle<T>: Clone;
@@ -565,7 +571,7 @@ pub trait ConstraintInterface {
     /// This is provided since empty expression is meant to be a singleton.
     fn empty_expression(&self) -> Term;
 
-    /// Get the handle for the NoneType
+    /// Get the handle for the `NoneType`
     fn none_type(&self) -> Self::Handle<AbcType>;
 
     /// Add an expression into the constraint system.
@@ -585,6 +591,9 @@ pub trait ConstraintInterface {
     /// * `into` - If the result of the function is used, this is the variable that holds it.
     ///
     /// This returns a handle to the expression that allows it to be used in other expressions
+    ///
+    /// # Errors
+    /// The implementation should return an error if the function called does not reside in the arena.
     fn make_call(
         &mut self,
         func: Self::Handle<Summary>,
@@ -595,6 +604,9 @@ pub trait ConstraintInterface {
     /// Add a new constraint to the constraint system. Any active predicates are applied to the constraint to "filter" the domain of its expression.
     ///
     /// Note: These will need to be desugared.
+    ///
+    /// # Errors
+    ///
     fn add_constraint(&mut self, lhs: Term, op: ConstraintOp, rhs: Term) -> Result<(), Self::E>;
 
     fn declare_type(&mut self, ty: AbcType) -> Result<Self::Handle<AbcType>, Self::E>;
@@ -630,7 +642,7 @@ pub trait ConstraintInterface {
     ///
     /// In other words, it would be as if all constraints were of the form [p] -> [c]
     /// Nested predicate blocks end up composing the predicates. E.g.,
-    /// `begin_predicate_block(p1)`` followed by `begin_predicate_block(p2)` would
+    /// ``begin_predicate_block(p1)`` followed by ``begin_predicate_block(p2)`` would
     /// mark all constraints as [p1 && p2] -> [c]
     /// That is, when determining if the constraint is violated, the solver
     /// will essentially check p -> c.
@@ -782,16 +794,19 @@ Implementation of predicate constructors for term
 
 impl Term {
     /// Creates lhs && rhs
+    #[must_use]
     pub fn new_logical_and(lhs: Term, rhs: Term) -> Self {
         Term::Predicate(Predicate::new_and(lhs, rhs))
     }
 
     /// Constructs lhs || rhs
+    #[must_use]
     pub fn new_logical_or(lhs: Term, rhs: Term) -> Self {
         Term::Predicate(Predicate::new_or(lhs, rhs))
     }
 
     /// Constructs lhs `op` rhs
+    #[must_use]
     pub fn new_comparison(op: CmpOp, lhs: Term, rhs: Term) -> Self {
         Term::Predicate(Predicate::new_comparison(op, lhs, rhs).into())
     }
@@ -801,6 +816,7 @@ impl Term {
     /// If `t` is already a [`Predicate::Not`], then it removes the `!`
     ///
     /// [`Predicate::Not`]: crate::Predicate::Not
+    #[must_use]
     pub fn new_not(t: Term) -> Self {
         Term::Predicate(match t {
             Term::Predicate(pred) => Predicate::new_not(pred),
@@ -828,19 +844,23 @@ impl Term {
         Term::Expr(expr.into())
     }
 
+    #[must_use]
     pub fn new_call(func: Handle<Summary>, args: Vec<Term>) -> Self {
         Term::Expr(AbcExpression::Call { func, args }.into())
     }
     /// Wrapper around making a new predicate and placing the predicate in this expression.
+    #[must_use]
     pub fn new_cmp_op(op: CmpOp, lhs: Term, rhs: Term) -> Self {
         Term::Predicate(Predicate::new_comparison(op, lhs, rhs).into())
     }
 
+    #[must_use]
     pub fn new_index_access(base: Term, index: Term) -> Self {
         AbcExpression::IndexAccess { base, index }.into()
     }
 
     /// Creates a new field access expression
+    #[must_use]
     pub fn new_struct_access(base: Term, fieldname: String, ty: Handle<AbcType>) -> Self {
         AbcExpression::FieldAccess {
             base,
@@ -850,17 +870,19 @@ impl Term {
         .into()
     }
 
-    pub fn new_literal<T>(lit: T) -> Self
+    pub fn new_literal<T>(lit: &T) -> Self
     where
         T: ToString,
     {
         Self::Literal(lit.to_string())
     }
 
+    #[must_use]
     pub fn new_binary_op(op: BinaryOp, lhs: Term, rhs: Term) -> Self {
         AbcExpression::BinaryOp(op, lhs, rhs).into()
     }
 
+    #[must_use]
     pub fn new_select(pred: Term, then_expr: Term, else_expr: Term) -> Self {
         // In select, term *should* be a predicate.
         // Otherwise, we have to make it into one.
@@ -871,6 +893,7 @@ impl Term {
         AbcExpression::Select(pred, then_expr, else_expr).into()
     }
 
+    #[must_use]
     pub fn make_array_length(var: Term) -> Self {
         AbcExpression::ArrayLength(var).into()
     }
@@ -1025,10 +1048,14 @@ impl ConstraintHelper {
     #[allow(unused)]
     /// Mark the length of a dimension
     /// Not sure if this is even needed, honestly.
-    fn mark_ndim(&mut self, term: Term, ndim: u8) {
+    fn mark_ndim(&mut self, term: &Term, ndim: u8) {
         self.write(format!("ndim({term}) = {ndim}"));
     }
 
+    /// Write the constraints for the module to the provided stream
+    ///
+    /// # Errors
+    /// Propagates any errors encountered when writing to the provided `stream`
     pub fn write_to_stream(
         &self,
         stream: &mut impl std::io::Write,
@@ -1055,7 +1082,7 @@ impl ConstraintInterface for ConstraintHelper {
     fn empty_expression(&self) -> Term {
         EMPTY_TERM.clone()
     }
-    /// A reference to the NoneType in this constraint system.
+    /// A reference to the `NoneType` in this constraint system.
     ///
     /// Nonetype is meant to be a singleton, and this provides a wrapper to reference it.
     fn none_type(&self) -> Self::Handle<AbcType> {
@@ -1146,7 +1173,7 @@ impl ConstraintInterface for ConstraintHelper {
         // Otherwise, if we are given a string, then we create a new var.
 
         // if let Some(arc_var) = Arc::downcast::<Var>(var)
-        self.write(format!("type({var}) = {}", ty));
+        self.write(format!("type({var}) = {ty}"));
         Ok(())
     }
 
@@ -1155,7 +1182,7 @@ impl ConstraintInterface for ConstraintHelper {
     /// # Errors
     /// Returns [`ConstraintError::SummaryError`] if there is no active summary.
     fn mark_return_type(&mut self, ty: Self::Handle<AbcType>) -> Result<(), Self::E> {
-        self.write(format!("type(@ret) = {}", ty));
+        self.write(format!("type(@ret) = {ty}"));
         match self.active_summary {
             None => Err(ConstraintError::SummaryError),
             Some(ref mut summary) => {
@@ -1174,7 +1201,7 @@ impl ConstraintInterface for ConstraintHelper {
     ) -> Result<(), Self::E> {
         // self.write(format!("/* {:?} */", source));
         self.add_constraint(term, op, rhs)?;
-        self.append_last(format!("{:?}", source));
+        self.append_last(format!("{source:?}"));
         // Then, just write the source
         Ok(())
     }
@@ -1184,7 +1211,7 @@ impl ConstraintInterface for ConstraintHelper {
     /// Any active predicates are applied.
     ///
     /// If source is given and not none, then the source is used to provide context for the constraint.
-    /// It really should implement the ToString trait.
+    /// It really should implement the `ToString` trait.
     fn add_constraint(&mut self, term: Term, op: ConstraintOp, rhs: Term) -> Result<(), Self::E> {
         // build the predicate. To start with, we have the permanent predicate
         // Then, we have the AND of the current predicate stack.
@@ -1211,8 +1238,7 @@ impl ConstraintInterface for ConstraintHelper {
             #[allow(unreachable_patterns)]
             _ => {
                 return Err(ConstraintError::NotImplemented(format!(
-                    "ConstraintOp::{:?}",
-                    op
+                    "ConstraintOp::{op:?}"
                 )))
             }
         };
@@ -1335,7 +1361,7 @@ impl ConstraintInterface for ConstraintHelper {
     /// When we are inside of a loop context, any update to a variable is marked as a range constraint.
     /// It also allows for special handling of break and continue statements.
     /// HOWEVER, for the time being, we can't do any of this fancy handling
-    /// So we are just going to emit a "begin_loop(condition)" statement, and will assume this is a part of the constraint system.
+    /// So we are just going to emit a "`begin_loop(condition)`" statement, and will assume this is a part of the constraint system.
     fn begin_loop<T>(&mut self, condition: T) -> Result<(), ConstraintError>
     where
         T: AsRef<Predicate>,
