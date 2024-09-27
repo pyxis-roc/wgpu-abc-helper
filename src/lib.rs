@@ -826,10 +826,8 @@ impl Term {
 }
 
 impl Term {
-    /// Make a `Not` expression.
-    ///
-    /// This will always return the `Predicate` variant.
-
+    /// Constructs a new `Term::Var`
+    #[must_use]
     pub fn new_var<T>(var: T) -> Self
     where
         T: Into<Handle<Var>>,
@@ -837,6 +835,7 @@ impl Term {
         Term::Var(var.into())
     }
 
+    #[must_use]
     pub fn new_expr<T>(expr: T) -> Self
     where
         T: Into<Handle<AbcExpression>>,
@@ -870,6 +869,7 @@ impl Term {
         .into()
     }
 
+    #[must_use]
     pub fn new_literal<T>(lit: &T) -> Self
     where
         T: ToString,
@@ -1477,7 +1477,7 @@ mod tests {
     #[rstest]
     fn test_mark_ndim(mut constraint_helper: ConstraintHelper) {
         let x = fresh_var(&mut constraint_helper, "x".to_string());
-        constraint_helper.mark_ndim(x, 3);
+        constraint_helper.mark_ndim(&x, 3);
         check_constraint_output(constraint_helper, "ndim(x) = 3");
     }
 
