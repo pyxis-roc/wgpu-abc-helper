@@ -1494,7 +1494,3 @@ mod tests {
         assert_eq!(term.to_string(), "x");
     }
 }
-
-// /// FFI bindings for the rust library.
-// #[cfg(feature = "cffi")]
-// pub mod ffi_bindings;
