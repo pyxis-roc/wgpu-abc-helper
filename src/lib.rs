@@ -33,11 +33,11 @@ In an effort to avoid overapproximating the constraints, the constraint helper
 provides a few mechanisms to handle loops.
 
 
-[`Summary`]: ::Summary
-[`Type`]: ::AbcType
-[`Var`]: ::Var
-[`Expression`]: ::AbcExpression
-[`ConstraintHelper`]: ::ConstraintHelper
+[`Summary`]: crate::Summary
+[`Type`]: crate::AbcType
+[`Var`]: crate::Var
+[`Expression`]: crate::AbcExpression
+[`ConstraintHelper`]: crate::ConstraintHelper
 */
 
 use std::sync::Arc;
@@ -640,17 +640,17 @@ pub trait ConstraintInterface {
     /// that all expressions that follow can be filtered by the predicate.
     /// Any constraint that falls within a predicate becomes a soft constraint
     ///
-    /// In other words, it would be as if all constraints were of the form [p] -> [c]
+    /// In other words, it would be as if all constraints were of the form ``p -> c``
     /// Nested predicate blocks end up composing the predicates. E.g.,
     /// ``begin_predicate_block(p1)`` followed by ``begin_predicate_block(p2)`` would
-    /// mark all constraints as [p1 && p2] -> [c]
+    /// mark all constraints as ``p1 && p2 -> c``
     /// That is, when determining if the constraint is violated, the solver
     /// will essentially check p -> c.
     fn begin_predicate_block(&mut self, p: Term) -> Result<(), Self::E>;
 
     /// End the active predicate block.
     ///
-    /// If there was a return statement within the block, then all future constraints are marked as [!p] -> c
+    /// If there was a return statement within the block, then all future constraints are marked as ``!p -> c``
     ///
     /// # Errors
     /// Returns an error if there is no active predicate block.
@@ -973,9 +973,6 @@ pub struct ConstraintHelper {
     /// As soon as a return is marked, its predicate is appended to the `permanent_predicate` field.
     permanent_predicate: Option<Handle<Predicate>>,
 
-    /// The types we know about..
-    ///
-
     /// Summaries can't be nested, so we only need to track what the active one is.
     /// When we pop a summary, we clear out the predicate stack.
     active_summary: Option<Summary>,
@@ -1029,6 +1026,7 @@ impl ConstraintHelper {
             (None, None) => None,
         }
     }
+
     fn write(&mut self, s: String) {
         println!("{}", &s);
         self.statements.push(s);
@@ -1318,19 +1316,6 @@ impl ConstraintInterface for ConstraintHelper {
         Ok(())
     }
 
-    /// Sugar for a predicate block with a single entry.
-    ///
-    /// Provided for conveniently handling wgsl's select<...> syntax.
-    // fn push_select(
-    //     &mut self,
-    //     pred: Handle<Predicate>,
-    //     then_expr: Handle<AbcExpression>,
-    //     else_expr: Handle<AbcExpression>,
-    // ) {
-    //     self.write("{pred} ".to_string());
-    //     self.write(format!("select({pred}, {then_expr}, {else_expr})"));
-    // }
-
     /// Ends the previous predicate block.
     ///
     /// Returns an error if the predicate stack is empty.
@@ -1358,6 +1343,7 @@ impl ConstraintInterface for ConstraintHelper {
     }
 
     /// Begins a loop context.
+    ///
     /// When we are inside of a loop context, any update to a variable is marked as a range constraint.
     /// It also allows for special handling of break and continue statements.
     /// HOWEVER, for the time being, we can't do any of this fancy handling

@@ -3,6 +3,7 @@ repos:
     rev: v1.1.0
     hooks:
     -   id: fmt
+        require_serial: true
     -   id: check
     -   id: clippy
   - repo: https://github.com/fsfe/reuse-tool
