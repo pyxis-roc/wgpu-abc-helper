@@ -735,19 +735,14 @@ impl std::fmt::Display for Summary {
 }
 
 impl Summary {
-    /// Returns a vector of constraints where all arguments have been replaced with another
-    ///
-    /// This is the desugaring pass for `@` specifiers.
-    // pub fn substitute_args(with: &[Constraint]) -> Self {
-
-    // }
-
+    /// Return the number of arguments the function takes.
     #[allow(clippy::cast_possible_truncation)]
     #[must_use]
     pub fn nargs(&self) -> u8 {
         self.args.len() as u8
     }
 
+    /// Create a new summary with the given name and number of arguments.
     #[must_use]
     pub fn new(name: String, nargs: u8) -> Self {
         Summary {
@@ -765,10 +760,12 @@ impl Summary {
         self.args.push(arg);
     }
 
+    /// Add a constraint to the summary.
     pub fn add_constraint(&mut self, constraint: Constraint) {
         self.constraints.push(constraint);
     }
 
+    /// Add an assumption to the summary.
     pub fn add_assumption(&mut self, assumption: Constraint) {
         self.assumptions.push(assumption);
     }
