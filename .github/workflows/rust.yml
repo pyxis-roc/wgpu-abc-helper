@@ -7,12 +7,21 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
   pull_request:
     branches:
       - main
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
   workflow_dispatch:
   schedule: [cron: "40 1 * * 6"]
-
 jobs:
   clippy:
     name: Clippy
