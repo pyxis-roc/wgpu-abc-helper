@@ -2,9 +2,11 @@
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 [package]
-name = "abc-helper" # TODO: Change name when we decide on a good one.
-version = "0.2.0"
+name = "abc-helper"
+version = "0.3.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "An array bounds checking solver for wgsl compilers"
 
 [dependencies]
 lazy_static = { version = "1.4.0"}
