@@ -8,8 +8,8 @@
 use log::info as log_info;
 
 use crate::{
-    AbcExpression, AbcType, Constraint, ConstraintOp, Handle, OpaqueMarker, Predicate, Summary,
-    Term, Var, EMPTY_TERM, NONETYPE, RET,
+    AbcExpression, AbcType, Constraint, ConstraintOp, FastHashMap, Handle, OpaqueMarker, Predicate,
+    SubstituteTerm, Summary, Term, Var, NONETYPE, RET,
 };
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -26,6 +26,10 @@ pub enum ConstraintError {
     MaxLoopDepthExceeded,
     #[error("Empty expression in disallowed context.")]
     EmptyExpression,
+    #[error("Invalid number of arguments passed to call")]
+    InvalidArguments,
+    #[error("Attempt to assign a return value to a function with no return value")]
+    NoReturnValue,
 }
 
 #[allow(clippy::missing_errors_doc)]
@@ -255,6 +259,12 @@ pub struct ConstraintHelper {
     /// Global constraints not tied to a function
     global_constraints: Vec<Constraint>,
 
+    /// Global assumptions not tied to a function
+    global_assumptions: Vec<Constraint>,
+
+    /// Map from varnames to an ssa counter..
+    ssa_map: FastHashMap<String, u32>,
+
     /// The number of loop layers that are active.
     ///
     /// Incremented when a loop begins, decremented when a loop ends.
@@ -262,6 +272,49 @@ pub struct ConstraintHelper {
 }
 
 impl ConstraintHelper {
+    /// Get a mutable reference to the active summary's assumptions, or the global assumptions if there is no active summary.
+    fn get_cur_assumption_vec(&mut self) -> &mut Vec<Constraint> {
+        if let Some(ref mut summary) = self.active_summary {
+            &mut summary.assumptions
+        } else {
+            &mut self.global_assumptions
+        }
+    }
+
+    /// Get a mutable reference to the active summary's constraints, or the global constraints if there is no active summary.
+    fn get_cur_constraint_vec(&mut self) -> &mut Vec<Constraint> {
+        if let Some(ref mut summary) = self.active_summary {
+            &mut summary.constraints
+        } else {
+            &mut self.global_constraints
+        }
+    }
+
+    /// Get a fresh `@ret` variable
+    ///
+    /// RET variables are special, but they still need a unique suffix in order to be properly bound.
+    /// Otherwise, we will have multiple `@ret`....
+    ///
+    /// # Panics
+    /// If the counter for the variable name would overflow.
+    fn fresh_ret_var<T: AsRef<str>>(&mut self, postfix: Option<T>) -> Var {
+        let mut s = String::from("@ret");
+        if let Some(postfix) = postfix {
+            s.push('_');
+            s.push_str(postfix.as_ref());
+        }
+        let counter = self.ssa_map.entry(s.clone()).or_insert(0);
+        if *counter == u32::MAX {
+            panic!("Variable counter overflow");
+        } else if counter != &0 {
+            *counter += 1;
+            s.push('$');
+            s.push_str(&counter.to_string());
+        }
+
+        Var { name: s }
+    }
+
     /// Creates the predicate guard, if there should be one.
     ///
     /// # Returns
@@ -276,13 +329,11 @@ impl ConstraintHelper {
     }
 
     fn write(&mut self, s: String) {
-        println!("{}", &s);
         self.statements.push(s);
     }
 
     /// Append a comment after the end of the last statement.
     fn append_last(&mut self, s: String) {
-        println!("/* {} */", &s);
         if let Some(o) = self.statements.last_mut() {
             o.push(' ');
             o.push_str(&s);
@@ -316,6 +367,41 @@ impl ConstraintHelper {
             .cloned()
             .reduce(Predicate::new_and)
     }
+
+    /// Creates a [`Constraint`] for use as an assumption or requirement.
+    ///
+    /// [`Constraint`]: crate::Constraint
+    fn build_constraint(
+        &mut self,
+        term: Term,
+        op: ConstraintOp,
+        rhs: Term,
+    ) -> Result<Constraint, ConstraintError> {
+        let guard = self.make_guard();
+        match op {
+            ConstraintOp::Unary => Ok(Constraint::Expression { guard, term }),
+            // An empty rhs is not allowed unless this is a unary constraint.
+            _ if matches!(rhs, Term::Expr(ref e) if matches!(e.as_ref(), AbcExpression::Empty)) => {
+                Err(ConstraintError::EmptyExpression)
+            }
+            ConstraintOp::Assign => Ok(Constraint::Assign {
+                lhs: term,
+                rhs,
+                guard,
+            }),
+            ConstraintOp::Cmp(op) => Ok(Constraint::Cmp {
+                guard,
+                lhs: term,
+                op,
+                rhs,
+            }),
+            // Allow sus to add constraints in the future without having to implement them.
+            #[allow(unreachable_patterns)]
+            _ => Err(ConstraintError::NotImplemented(format!(
+                "ConstraintOp::{op:?}"
+            ))),
+        }
+    }
 }
 
 impl ConstraintInterface for ConstraintHelper {
@@ -346,7 +432,9 @@ impl ConstraintInterface for ConstraintHelper {
 
     /// Add the constraints of the summary by invoking the function call with the proper arguments.
     ///
-    /// This will add the constraints of the summary to the constraint system.
+    /// This will add the constraints of the summary to the constraint system, with
+    /// the arguments substituted with `args`, and the return value substituted with `into`.
+    /// If `into` is `None`, then a new term is created for the return value (for proper ssa handling)
     fn make_call(
         &mut self,
         func: Self::Handle<Summary>,
@@ -355,21 +443,56 @@ impl ConstraintInterface for ConstraintHelper {
     ) -> Result<Term, Self::E> {
         // We have to add the constraints from the summary.
         // For now, we don't do this, but we will have to on the desugaring pass.
-        let call = self.add_expression(AbcExpression::Call {
-            func: func.clone(),
-            args,
-        })?;
-
-        if let Some(into) = into {
-            // Turn the var into an expression, and return said expression.
-            self.mark_type(into.clone(), func.return_type.clone())?;
-            self.add_constraint(into.clone(), ConstraintOp::Assign, call)?;
-            Ok(into)
-        } else {
-            // At this point, we need to add the constraints of all of the terms in the function.
-            self.add_constraint(call.clone(), ConstraintOp::Unary, EMPTY_TERM.clone())?;
-            Ok(call)
+        // First, we add assumptions that all arguments equal their call.
+        if args.len() != func.args.len() {
+            return Err(ConstraintError::SummaryError);
         }
+
+        // We replace the arguments in the constraints...
+        let mut term_vec: Vec<(&Term, &Term)> =
+            Vec::with_capacity(args.len() + usize::from(matches!(func.ret_term, Term::Empty)));
+        func.args
+            .iter()
+            .zip(args.iter())
+            .for_each(|(left, right)| term_vec.push((left, right)));
+
+        // Replace references to the ret term with this new term...
+        let ret_term = if let Some(t) = into {
+            t
+        } else {
+            let new_ret = self.fresh_ret_var(Some(&func.name));
+            self.declare_var(new_ret)?
+        };
+
+        // We don't do replacements on an empty term...
+        if func.ret_term.is_empty() {
+            self.mark_type(ret_term.clone(), NONETYPE.clone())?;
+        } else {
+            term_vec.push((&func.ret_term, &ret_term));
+        }
+        // Add constraints from the summary
+
+        let added_constraints: Vec<Constraint> = func
+            .constraints
+            .iter()
+            .map(|c| c.substitute_multi(&term_vec))
+            .collect();
+        for constraint in &added_constraints {
+            self.write(format!("{constraint}"));
+        }
+        self.get_cur_constraint_vec().extend(added_constraints);
+
+        let added_assumptions: Vec<Constraint> = func
+            .assumptions
+            .iter()
+            .map(|c| c.substitute_multi(&term_vec))
+            .collect();
+        for assumption in &added_assumptions {
+            self.write(format!("assume({assumption})"));
+        }
+        self.get_cur_assumption_vec().extend(added_assumptions);
+
+        Ok(ret_term)
     }
 
     fn add_argument(&mut self, name: String, ty: Self::Handle<AbcType>) -> Result<Term, Self::E> {
@@ -427,6 +550,7 @@ impl ConstraintInterface for ConstraintHelper {
     }
 
     /// Mark the return type for the active summary.
+    /// Can only be called once per active summary.
     ///
     /// # Errors
     /// Returns [`ConstraintError::SummaryError`] if there is no active summary.
@@ -462,33 +586,7 @@ impl ConstraintInterface for ConstraintHelper {
     fn add_constraint(&mut self, term: Term, op: ConstraintOp, rhs: Term) -> Result<(), Self::E> {
         // build the predicate. To start with, we have the permanent predicate
         // Then, we have the AND of the current predicate stack.
-
-        let guard = self.make_guard();
-        let new_constraint = match op {
-            ConstraintOp::Unary => Constraint::Expression { guard, term },
-            // An empty rhs is not allowed unless this is a unary constraint.
-            _ if matches!(rhs, Term::Expr(ref e) if matches!(e.as_ref(), AbcExpression::Empty)) => {
-                return Err(ConstraintError::EmptyExpression);
-            }
-            ConstraintOp::Assign => Constraint::Assign {
-                lhs: term,
-                rhs,
-                guard,
-            },
-            ConstraintOp::Cmp(op) => Constraint::Cmp {
-                guard,
-                lhs: term,
-                op,
-                rhs,
-            },
-            // Allow sus to add constraints in the future without having to implement them.
-            #[allow(unreachable_patterns)]
-            _ => {
-                return Err(ConstraintError::NotImplemented(format!(
-                    "ConstraintOp::{op:?}"
-                )))
-            }
-        };
+        let new_constraint = self.build_constraint(term, op, rhs)?;
         self.write(new_constraint.to_string());
         // Now we add the constraint.
         match self.active_summary {
@@ -499,7 +597,7 @@ impl ConstraintInterface for ConstraintHelper {
         Ok(())
     }
 
-    /// When we encounter a return, push the current predicate on the current, if there is a current predicate stack...
+    /// When we encounter a return, push the current predicate on the current stack, if there is a current predicate stack...
     fn mark_return(&mut self, retval: Option<Term>) -> Result<(), ConstraintError> {
         if self.active_summary.is_none() {
             return Err(ConstraintError::SummaryError);
@@ -526,9 +624,7 @@ impl ConstraintInterface for ConstraintHelper {
         Ok(())
     }
 
-    #[allow(unused_variables)]
     /// Mark an assumption.
-    ///
     ///
     /// Assumptions are invariants that must hold at all times.
     /// At solving time, these differ from constraints in that they are not inverted
@@ -537,12 +633,19 @@ impl ConstraintInterface for ConstraintHelper {
     /// # Errors
     /// Errors if the assumption is not well formed or supported by the system.
     fn add_assumption(&mut self, lhs: Term, op: ConstraintOp, rhs: Term) -> Result<(), Self::E> {
-        Err(ConstraintError::NotImplemented(
-            "mark_assumption".to_string(),
-        ))
+        let constraint = self.build_constraint(lhs, op, rhs)?;
+        self.write(format!("assume({constraint})"));
+        if let Some(ref mut s) = self.active_summary {
+            s.add_assumption(constraint);
+        } else {
+            self.global_assumptions.push(constraint);
+        }
+        Ok(())
     }
 
-    /// Mark the length of an array's dimension. Used for arrays with a fixed size.
+    /// Mark the length of an array's dimension.
+    ///
+    /// Used for arrays with a fixed size.
     fn mark_length(&mut self, var: Term, dim: u8, size: u64) -> Result<(), ConstraintError> {
         self.write(format!("length({var}, {dim}) = {size}"));
         Ok(())
@@ -627,7 +730,6 @@ impl ConstraintInterface for ConstraintHelper {
     }
 
     /// Begin a summary block.
-    #[inline]
     fn begin_summary(&mut self, name: String, nargs: u8) -> Result<(), ConstraintError> {
         // Mini optimization for allocating the perfect amount of characters needed for the string
         let str_len = 17
@@ -655,6 +757,7 @@ impl ConstraintInterface for ConstraintHelper {
             constraints: Vec::new(),
             return_type: NONETYPE.clone(),
             assumptions: Vec::new(),
+            ret_term: Term::Empty,
         };
         self.active_summary = Some(new_summary);
 
@@ -670,7 +773,7 @@ impl ConstraintInterface for ConstraintHelper {
         let mut fmt_str = String::with_capacity(13 + summary.name.len());
         fmt_str.push_str("end_summary(");
         fmt_str.push_str(&summary.name);
-        fmt_str.push(')');
+        fmt_str.push_str(")\n");
         self.write(fmt_str);
 
         // Clear the state from the current summary.
@@ -720,5 +823,62 @@ pub(crate) mod test {
         let x = fresh_var(&mut constraint_helper, "x".to_string());
         constraint_helper.mark_ndim(&x, 3);
         check_constraint_output(&constraint_helper, "ndim(x) = 3");
+    }
+
+    /// Test that functions called within a sumamry have their constraints inlined.
+    #[rstest]
+    fn test_func_inline(mut constraint_helper: ConstraintHelper) {
+        constraint_helper
+            .begin_summary("test_func".to_string(), 1)
+            .unwrap();
+        let my_ty = constraint_helper
+            .declare_type(AbcType::Scalar(AbcScalar::Uint(4)))
+            .unwrap();
+        let arg = constraint_helper
+            .add_argument("test_arg_1".to_string(), my_ty)
+            .unwrap();
+        constraint_helper
+            .add_assumption(
+                arg,
+                ConstraintOp::Cmp(crate::CmpOp::Eq),
+                Term::new_literal(4u32),
+            )
+            .unwrap();
+
+        let old_method = constraint_helper.end_summary().unwrap();
+
+        // Now, begin a new summary.
+        constraint_helper
+            .begin_summary("actual_func".to_string(), 1)
+            .unwrap();
+        // make a new literal
+        let my_x = constraint_helper
+            .declare_var(Var {
+                name: "x".to_string(),
+            })
+            .unwrap();
+
+        let args = vec![my_x.clone()];
+        // Now, push a call.
+        constraint_helper.make_call(old_method, args, None).unwrap();
+
+        let expected_constraint = constraint_helper
+            .build_constraint(
+                my_x.clone(),
+                ConstraintOp::Cmp(crate::CmpOp::Eq),
+                Term::new_literal(4u32),
+            )
+            .unwrap();
+
+        let result = constraint_helper
+            .active_summary
+            .as_ref()
+            .unwrap()
+            .assumptions
+            .iter()
+            .any(|c| *c == expected_constraint);
+        // println!("{}", String::from_utf8(output).unwrap());
+
+        assert!(result);
     }
 }

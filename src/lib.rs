@@ -47,6 +47,17 @@ type FastHashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 
 use lazy_static::lazy_static;
 
+/// Objects that derive this trait mean they support replacing terms within them with other terms.
+trait SubstituteTerm {
+    /// This should always return a clone of `to` if `self.is_identical(from)` is true.
+    #[must_use]
+    fn substitute(&self, from: &Term, to: &Term) -> Self;
+
+    /// Substitute multiple terms at once.
+    #[must_use]
+    fn substitute_multi(&self, mapping: &[(&Term, &Term)]) -> Self;
+}
+
 // For right now, we are using handles. Later on, we might switch to an arena with actual handles.
 
 pub type Handle<T> = Arc<T>;
@@ -74,7 +85,7 @@ where
 }
 
 // For right now, everything will be a string... We will not do type checking.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Var {
     /// The name of the variable
     pub name: String,
@@ -161,7 +172,7 @@ impl CmpOp {
 }
 
 /// A constraint operation is any comparison operator OR an assignment.
-#[derive(strum_macros::Display, Debug, Clone)]
+#[derive(strum_macros::Display, Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum ConstraintOp {
     #[strum(to_string = "=")]
     Assign,
@@ -171,7 +182,13 @@ pub enum ConstraintOp {
     Unary,
 }
 
-#[derive(Debug, Clone)]
+impl From<CmpOp> for ConstraintOp {
+    fn from(value: CmpOp) -> Self {
+        Self::Cmp(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Constraint {
     /// An assignment constraint
     Assign {
@@ -199,6 +216,45 @@ pub enum Constraint {
     },
 }
 
+// Expands to the match that calls itself on the fields within.
+macro_rules! constraint_sub {
+    ($self:ident, $name:ident, ($($args:expr),*)) => {
+        match $self {
+            Self::Assign { guard, lhs, rhs } => Self::Assign {
+                guard: guard.as_ref().map(|f| f.$name($($args),*).into()),
+                lhs: lhs.$name($($args),*),
+                rhs: rhs.$name($($args),*),
+            },
+            Self::Cmp { guard, lhs, op, rhs } => Self::Cmp {
+                guard: guard.as_ref().map(|f| f.$name($($args),*).into()),
+                lhs: lhs.$name($($args),*),
+                op: *op,
+                rhs: rhs.$name($($args),*),
+            },
+            Self::Expression { guard, term } => Self::Expression {
+                guard: guard.as_ref().map(|f| f.$name($($args),*).into()),
+                term: term.$name($($args),*),
+            },
+        }
+    };
+}
+
+impl SubstituteTerm for Constraint {
+    fn substitute(&self, from: &Term, to: &Term) -> Self {
+        if from.is_identical(to) {
+            return self.clone();
+        }
+        constraint_sub! {self, substitute, (from, to)}
+    }
+
+    fn substitute_multi(&self, mapping: &[(&Term, &Term)]) -> Self {
+        if mapping.len() == 1 {
+            return self.substitute(mapping[0].0, mapping[0].1);
+        }
+        constraint_sub!(self, substitute_multi, (mapping))
+    }
+}
+
 impl Constraint {
     /// Return the guard portion of the constraint
     fn guard(&self) -> Option<Handle<Predicate>> {
@@ -224,7 +280,7 @@ impl std::fmt::Display for Constraint {
     }
 }
 
-#[derive(strum_macros::Display, Debug, Clone)]
+#[derive(strum_macros::Display, Debug, Clone, PartialEq)]
 pub enum Predicate {
     // Conjunction of two predicates, e.g. x && y
     #[strum(to_string = "({0}) && ({1})")]
@@ -388,7 +444,7 @@ impl Predicate {
 }
 
 /// Enum for different expression kinds
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AbcExpression {
     /// A binary operator, e.g., x + y
     BinaryOp(BinaryOp, Term, Term),
@@ -422,6 +478,103 @@ pub enum AbcExpression {
     /// The empty expression. This is meant to be used as a placeholder for constraint operations that have no expression.
     /// Displaying this is therefore a parse error.
     Empty,
+}
+
+//
+macro_rules! expression_sub {
+    ($self:ident, $name:ident, ($($args:expr),*)) => {
+        match $self {
+            Self::Empty => Self::Empty,
+            Self::Cast(t, s) => Self::Cast(t.$name($($args),*), *s),
+            Self::ArrayLength(t) => Self::ArrayLength(t.$name($($args),*)),
+            Self::BinaryOp(op, l, r) => {
+                Self::BinaryOp(*op, l.$name($($args),*), r.$name($($args),*))
+            }
+            Self::Call { func, args } => {
+                let mut new_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    new_args.push(arg.$name($($args),*))
+                }
+                Self::Call {
+                    func: func.clone(),
+                    args: new_args,
+                }
+            }
+            Self::FieldAccess {
+                base,
+                ty,
+                fieldname,
+            } => Self::FieldAccess {
+                base: base.$name($($args),*),
+                ty: ty.clone(),
+                fieldname: fieldname.clone(),
+            },
+
+            Self::Splat(t, v) => Self::Splat(t.$name($($args),*), *v),
+
+            Self::Select(t1, t2, t3) => Self::Select(
+                t1.$name($($args),*),
+                t2.$name($($args),*),
+                t3.$name($($args),*),
+            ),
+            Self::IndexAccess { base, index } => Self::IndexAccess {
+                base: base.$name($($args),*),
+                index: index.$name($($args),*),
+            },
+        }
+    }
+}
+
+impl SubstituteTerm for AbcExpression {
+    /// Create a new `AbcExpression` from `self` where all instances of `from` have been replaced by `to`
+    fn substitute(&self, from: &Term, to: &Term) -> Self {
+        // There's nothing to substitute if `from` and `to` are already the same.
+        if from.is_identical(to) {
+            return (*self).clone();
+        }
+        expression_sub! {self, substitute, (from, to)}
+    }
+    fn substitute_multi(&self, mapping: &[(&Term, &Term)]) -> Self {
+        if mapping.is_empty() {
+            return self.substitute(mapping[0].0, mapping[0].1);
+        }
+        expression_sub! {self, substitute_multi, (mapping)}
+    }
+}
+
+macro_rules! predicate_sub {
+    ($self:ident, $name:ident, ($($args:expr),*)) => {
+        match $self {
+            Self::False | Self::True => $self.clone(),
+            Self::And(l, r) => {
+                Self::And(l.$name($($args),*).into(), r.$name($($args),*).into())
+            }
+            Self::Or(l, r) => {
+                Self::Or(l.$name($($args),*).into(), r.$name($($args),*).into())
+            }
+            Self::Comparison(op, t1, t2) => {
+                Self::Comparison(*op, t1.$name($($args),*), t2.$name($($args),*))
+            }
+            Self::Not(p) => Self::Not(p.$name($($args),*).into()),
+            Self::Unit(t) => Self::Unit(t.$name($($args),*)),
+        }
+    }
+}
+
+impl SubstituteTerm for Predicate {
+    fn substitute(&self, from: &Term, to: &Term) -> Self {
+        if from.is_identical(to) {
+            return self.clone();
+        }
+        predicate_sub! {self, substitute, (from, to)}
+    }
+
+    fn substitute_multi(&self, mapping: &[(&Term, &Term)]) -> Self {
+        if mapping.len() == 1 {
+            return self.substitute(mapping[0].0, mapping[0].1);
+        }
+        predicate_sub! {self, substitute_multi, (mapping)}
+    }
 }
 
 impl std::fmt::Display for AbcExpression {
@@ -475,7 +628,7 @@ impl std::fmt::Display for AbcExpression {
 // Design: We have a helper class. This helper class holds the variables.
 
 /// Provides an interface to define a type in the constraint system.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AbcType {
     // A user defined compound type.
     Struct {
@@ -522,7 +675,7 @@ impl std::fmt::Display for AbcType {
 /// bounds on them. E.g., an i32 is assumed to have bounds -2^31 to 2^31 - 1.
 ///
 /// Note that for Sint, Uint, and Float, the width is in **bytes**.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AbcScalar {
     /// Signed integer type. The width is in bytes.
     Sint(u8),
@@ -555,18 +708,20 @@ impl std::fmt::Display for AbcScalar {
 
 /// A summary is akin to a function reference.
 /// For right now, we are just storing the name and the nargs...
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Summary {
     pub name: String,
     pub args: Vec<Term>,
     pub return_type: Handle<AbcType>,
 
-    // TODO: Make use of constraints.
-    // This will eventually store the constraints that are associated with the summary.
-    // However, in the current implementation, it is going to do nothing.
+    pub(self) ret_term: Term,
+
+    /// Constraints are predicates that must hold for the summary to be valid
     pub constraints: Vec<Constraint>,
 
-    /// Invariants that must always hold.
+    /// Assumptions are predicates that filter out invalid domains
+    ///
+    /// They mark things like assignment
     ///
     /// These encode information such as variable assignments.
     pub assumptions: Vec<Constraint>,
@@ -580,11 +735,19 @@ impl std::fmt::Display for Summary {
 }
 
 impl Summary {
+    /// Returns a vector of constraints where all arguments have been replaced with another
+    ///
+    /// This is the desugaring pass for `@` specifiers.
+    // pub fn substitute_args(with: &[Constraint]) -> Self {
+
+    // }
+
     #[allow(clippy::cast_possible_truncation)]
     #[must_use]
     pub fn nargs(&self) -> u8 {
         self.args.len() as u8
     }
+
     #[must_use]
     pub fn new(name: String, nargs: u8) -> Self {
         Summary {
@@ -593,6 +756,7 @@ impl Summary {
             constraints: Vec::new(),
             return_type: NONETYPE.clone(),
             assumptions: Vec::new(),
+            ret_term: Term::Empty,
         }
     }
 
@@ -603,6 +767,10 @@ impl Summary {
 
     pub fn add_constraint(&mut self, constraint: Constraint) {
         self.constraints.push(constraint);
+    }
+
+    pub fn add_assumption(&mut self, assumption: Constraint) {
+        self.assumptions.push(assumption);
     }
 }
 
@@ -710,7 +878,7 @@ impl From<std::num::NonZeroI16> for Literal {
 /// It also simplifies the logic for storing references to variables.
 ///
 /// Sometimes, we would like to be able to use a variable as a constraint.
-#[derive(Clone, Debug, strum_macros::Display)]
+#[derive(Clone, Debug, strum_macros::Display, PartialEq)]
 pub enum Term {
     #[strum(to_string = "{0}")]
     Expr(Handle<AbcExpression>),
@@ -722,6 +890,64 @@ pub enum Term {
     Predicate(Handle<Predicate>),
     /// An empty term or predicate.
     Empty,
+}
+
+impl Term {
+    /// Return whether this is the empty term.
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Term::Empty)
+    }
+    /// Determine whether `self` and `with` have identical structure and references.
+    ///
+    /// This is different from equality in that it uses `Arc::ptr_eq` to check its contents.
+    fn is_identical(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Expr(a), Self::Expr(b)) => Arc::ptr_eq(a, b),
+            (Self::Var(a), Self::Var(b)) => Arc::ptr_eq(a, b),
+            (Self::Predicate(a), Self::Predicate(b)) => Arc::ptr_eq(a, b),
+            (Self::Literal(a), Self::Literal(b)) => a == b,
+            (Self::Empty, Self::Empty) => true,
+            _ => false,
+        }
+    }
+}
+
+impl SubstituteTerm for Term {
+    /// Creates a new term where all references to `self` have been replaced with `to`
+    ///
+    /// If `self` and `from` are identical, this method just returns `with`
+    #[must_use]
+    fn substitute(&self, from: &Term, with: &Term) -> Self {
+        if self.is_identical(from) {
+            println!("Found a match for {self:?}, replacing with {with:?}");
+            with.clone()
+        } else {
+            match self {
+                Self::Expr(a) => Self::Expr(a.substitute(from, with).into()),
+                Self::Var(_) | Self::Literal(_) | Self::Empty => self.clone(),
+                Self::Predicate(p) => Self::Predicate(p.substitute(from, with).into()),
+            }
+        }
+    }
+
+    fn substitute_multi(&self, mapping: &[(&Term, &Term)]) -> Self {
+        if mapping.len() == 1 {
+            return self.substitute(mapping[0].0, mapping[0].1);
+        }
+        // Otherwise, if we are identical to one of the terms being replaced, then return what it is replaced with.
+        if let Some(t) = mapping.iter().find(|p| p.0.is_identical(self)) {
+            println!("Found a match for {:?}, replacing with {:?}", self, t.1);
+            t.1.clone()
+        } else {
+            match self {
+                Self::Expr(a) => Self::Expr(a.substitute_multi(mapping).into()),
+                Self::Var(_) | Self::Literal(_) | Self::Empty => self.clone(),
+                Self::Predicate(p) => Self::Predicate(p.substitute_multi(mapping).into()),
+            }
+        }
+    }
 }
 
 // `true` and `false` are predicates
@@ -964,7 +1190,7 @@ mod test {
     // Test terms.
     #[rstest]
     fn test_term_from_var(var_x: Term) {
-        let term = Term::from(var_x.clone());
+        let term = var_x.clone();
         assert_eq!(term.to_string(), "x");
     }
 
@@ -1016,20 +1242,18 @@ mod test {
         assert_eq!(term.to_string(), "true");
     }
 
-    ///
-    #[rstest]
     #[rstest]
     fn test_term_new_comparison(var_x: Term) {
         let var_y = Var {
             name: "y".to_string(),
         };
-        let term = Term::new_comparison(CmpOp::Eq, Term::from(var_x), Term::from(var_y));
+        let term = Term::new_comparison(CmpOp::Eq, var_x, Term::from(var_y));
         assert_eq!(term.to_string(), "(x) == (y)");
     }
 
     #[rstest]
     fn test_term_new_not(var_x: Term) {
-        let term = Term::new_not(Term::from(var_x));
+        let term = Term::new_not(var_x);
         assert_eq!(term.to_string(), "!(x)");
     }
 
@@ -1087,5 +1311,43 @@ mod test {
         let var = Term::new_var(Var::from("arr"));
         let term = Term::make_array_length(var);
         assert_eq!(term.to_string(), "length(arr)");
+    }
+
+    #[rstest]
+    fn test_term_substitute(var_x: Term, var_y: Term) {
+        let term = Term::new_logical_and(var_x.clone(), var_y.clone());
+        let term2 = term.substitute(&var_x, &var_y);
+        assert_eq!(term2.to_string(), "(y) && (y)");
+    }
+
+    #[rstest]
+    fn test_term_substitute_multi(var_x: Term, var_y: Term) {
+        let z_term = Term::new_var(Var {
+            name: "z".to_string(),
+        });
+        let w_term = Term::new_var(Var {
+            name: "w".to_string(),
+        });
+        let term = Term::new_logical_and(var_x.clone(), var_y.clone());
+        let term2 = term.substitute_multi(&[(&var_x, &z_term), (&var_y, &w_term)]);
+        assert_eq!(term2.to_string(), "(z) && (w)");
+    }
+
+    #[rstest]
+    fn test_constraint_substitute_multi(var_x: Term, var_y: Term) {
+        let z_term = Term::new_var(Var {
+            name: "z".to_string(),
+        });
+        let w_term = Term::new_var(Var {
+            name: "w".to_string(),
+        });
+        let constraint = Constraint::Cmp {
+            guard: None,
+            op: CmpOp::Eq,
+            lhs: var_x.clone(),
+            rhs: var_y.clone(),
+        };
+        let constraint2 = constraint.substitute_multi(&[(&var_x, &z_term), (&var_y, &w_term)]);
+        assert_eq!(constraint2.to_string(), "z == w");
     }
 }

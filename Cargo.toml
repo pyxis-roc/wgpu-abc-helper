@@ -31,3 +31,7 @@ crate-type = ["rlib"]
 
 [dev-dependencies]
 rstest = "0.22.0"
+
+
+[package.metadata.clippy]
+allow = ["clippy::must_use_candidate"]
