@@ -894,7 +894,6 @@ pub enum Term {
 
 impl Term {
     /// Return whether this is the empty term.
-
     #[must_use]
     pub fn is_empty(&self) -> bool {
         matches!(self, Term::Empty)
