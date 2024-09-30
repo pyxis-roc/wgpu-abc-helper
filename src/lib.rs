@@ -65,6 +65,8 @@ pub type Handle<T> = Arc<T>;
 mod helper;
 pub use helper::*;
 
+mod solvers;
+
 /// An opaque marker that is provided when specifying expressions to relate them, when necessary.
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
@@ -106,7 +108,7 @@ impl std::fmt::Display for Var {
 }
 
 /// A unary operation. Currently only supports unary minus.
-#[derive(strum_macros::Display, Debug, Clone, Copy)]
+#[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
     #[strum(to_string = "-")]
     Minus,
@@ -280,7 +282,7 @@ impl std::fmt::Display for Constraint {
     }
 }
 
-#[derive(strum_macros::Display, Debug, Clone, PartialEq)]
+#[derive(strum_macros::Display, Debug, Clone)]
 pub enum Predicate {
     // Conjunction of two predicates, e.g. x && y
     #[strum(to_string = "({0}) && ({1})")]
@@ -307,13 +309,60 @@ pub enum Predicate {
     True,
 }
 
-impl From<&bool> for Term {
-    fn from(val: &bool) -> Self {
-        Term::Predicate(if *val {
-            Predicate::True.into()
-        } else {
-            Predicate::False.into()
-        })
+impl PartialEq for Predicate {
+    fn eq(&self, other: &Self) -> bool {
+        use Predicate::{And, Comparison, False, Not, Or, True, Unit};
+        match (self, other) {
+            (And(a1, b1), And(a2, b2)) | (Or(a1, b1), Or(a2, b2)) => {
+                Arc::ptr_eq(a1, a2) && Arc::ptr_eq(b1, b2)
+            }
+            (Not(p1), Not(p2)) => Arc::ptr_eq(p1, p2),
+            (Comparison(op1, a1, b1), Comparison(op2, a2, b2)) => {
+                op1 == op2 && a1 == a2 && b1 == b2
+            }
+            (Unit(t1), Unit(t2)) => t1 == t2,
+            (False, False) | (True, True) => true,
+            _ => false,
+        }
+    }
+}
+impl Eq for Predicate {}
+
+impl std::hash::Hash for Predicate {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        use Predicate::{And, Comparison, False, Not, Or, True, Unit};
+        match self {
+            And(a, b) => {
+                0u8.hash(state);
+                Arc::as_ptr(a).hash(state);
+                Arc::as_ptr(b).hash(state);
+            }
+            Or(a, b) => {
+                1u8.hash(state);
+                Arc::as_ptr(a).hash(state);
+                Arc::as_ptr(b).hash(state);
+            }
+            Not(t) => {
+                2u8.hash(state);
+                Arc::as_ptr(t).hash(state);
+            }
+            Comparison(op, a, b) => {
+                3u8.hash(state);
+                op.hash(state);
+                a.hash(state);
+                b.hash(state);
+            }
+            Unit(t) => {
+                4u8.hash(state);
+                t.hash(state);
+            }
+            False => {
+                5u8.hash(state);
+            }
+            True => {
+                6u8.hash(state);
+            }
+        }
     }
 }
 
@@ -337,27 +386,9 @@ impl From<&bool> for Predicate {
     }
 }
 
-impl From<&Arc<Predicate>> for Term {
-    fn from(pred: &Arc<Predicate>) -> Self {
-        Term::Predicate(pred.clone())
-    }
-}
-
 impl From<&Term> for Term {
     fn from(term: &Term) -> Self {
         term.clone()
-    }
-}
-
-impl From<Arc<Predicate>> for Term {
-    fn from(pred: Arc<Predicate>) -> Self {
-        Term::Predicate(pred)
-    }
-}
-
-impl From<Predicate> for Term {
-    fn from(pred: Predicate) -> Self {
-        Term::Predicate(pred.into())
     }
 }
 
@@ -381,7 +412,10 @@ impl From<Term> for Predicate {
 
 impl From<&Term> for Predicate {
     fn from(term: &Term) -> Self {
-        Predicate::Unit(term.clone())
+        match term {
+            Term::Predicate(pred) => pred.as_ref().clone(),
+            _ => Predicate::Unit(term.clone()),
+        }
     }
 }
 
@@ -446,6 +480,8 @@ impl Predicate {
 /// Enum for different expression kinds
 #[derive(Debug, Clone, PartialEq)]
 pub enum AbcExpression {
+    /// A unary operator, e.g., -x
+    UnaryOp(UnaryOp, Term),
     /// A binary operator, e.g., x + y
     BinaryOp(BinaryOp, Term, Term),
     /// A select expression, e.g., select(x, y, z)
@@ -480,11 +516,74 @@ pub enum AbcExpression {
     Empty,
 }
 
+impl std::hash::Hash for AbcExpression {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        use AbcExpression::{
+            ArrayLength, BinaryOp, Call, Cast, Empty, FieldAccess, IndexAccess, Select, Splat,
+            UnaryOp,
+        };
+        match self {
+            UnaryOp(op, a) => {
+                0u8.hash(state);
+                op.hash(state);
+                a.hash(state);
+            }
+            BinaryOp(op, a, b) => {
+                1u8.hash(state);
+                op.hash(state);
+                a.hash(state);
+                b.hash(state);
+            }
+            Select(a, b, c) => {
+                2u8.hash(state);
+                a.hash(state);
+                b.hash(state);
+                c.hash(state);
+            }
+            Splat(t, u) => {
+                3u8.hash(state);
+                t.hash(state);
+                u.hash(state);
+            }
+            ArrayLength(t) => {
+                4u8.hash(state);
+                t.hash(state);
+            }
+            Call { func, args } => {
+                5u8.hash(state);
+                Arc::as_ptr(func).hash(state);
+                args.hash(state);
+            }
+            Cast(term, scalar) => {
+                6u8.hash(state);
+                term.hash(state);
+                scalar.hash(state);
+            }
+            FieldAccess {
+                base, fieldname, ..
+            } => {
+                7u8.hash(state);
+                base.hash(state);
+                fieldname.hash(state);
+            }
+            IndexAccess { base, index } => {
+                8u8.hash(state);
+                base.hash(state);
+                index.hash(state);
+            }
+            Empty => {
+                9u8.hash(state);
+            }
+        }
+    }
+}
+
 //
 macro_rules! expression_sub {
     ($self:ident, $name:ident, ($($args:expr),*)) => {
         match $self {
             Self::Empty => Self::Empty,
+            Self::UnaryOp(op, t) => Self::UnaryOp(*op, t.$name($($args),*)),
             Self::Cast(t, s) => Self::Cast(t.$name($($args),*), *s),
             Self::ArrayLength(t) => Self::ArrayLength(t.$name($($args),*)),
             Self::BinaryOp(op, l, r) => {
@@ -590,6 +689,7 @@ impl std::fmt::Display for AbcExpression {
                 }
                 f.write_char('>')
             }
+            AbcExpression::UnaryOp(op, expr) => write!(f, "{op}{expr}"),
             AbcExpression::BinaryOp(op, lhs, rhs) => write!(f, "{lhs} {op} {rhs}"),
             AbcExpression::Select(pred, then_expr, else_expr) => {
                 write!(f, "select({pred}, {then_expr}, {else_expr})")
@@ -618,15 +718,6 @@ impl std::fmt::Display for AbcExpression {
     }
 }
 
-// pub struct PredicateBlock {
-//     /// The predicate that guards this block
-//     guard: Handle<Predicate>,
-//     /// The statements in this block.
-//     statements: Vec<String>,
-// }
-
-// Design: We have a helper class. This helper class holds the variables.
-
 /// Provides an interface to define a type in the constraint system.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AbcType {
@@ -640,12 +731,15 @@ pub enum AbcType {
         ty: Handle<AbcType>,
         size: std::num::NonZeroU32,
     },
+
     // An array with an unknown size.
-    // what is an array with an override size?
+    // what is an array with an override size? Is this allowed?
     DynamicArray {
         ty: Handle<AbcType>,
     },
-    Scalar(AbcScalar), // Vector { ty: Handle<AbcType>, size: u32 }, // Just means we can swizzle...
+
+    /// A scalar type.
+    Scalar(AbcScalar),
 
     /// A value that doesn't exist
     ///
@@ -771,14 +865,8 @@ impl Summary {
     }
 }
 
-// Ret is a special Arc that is guaranteed to hold a predicate
-
 lazy_static! {
-    static ref RET: Term = Term::Var(Arc::new(Var {
-        name: "@ret".to_string()
-    }));
     pub static ref NONETYPE: Arc<AbcType> = Arc::new(AbcType::NoneType);
-    pub static ref EMPTY_TERM: Term = Term::Expr(Arc::new(AbcExpression::Empty));
 }
 
 /// A literal, ripped directly from naga's literal, with the `bool` literal dropped
@@ -786,7 +874,7 @@ lazy_static! {
 ///
 /// [`Predicate::True`]: crate::Predicate::True
 /// [`Predicate::False`]: crate::Predicate::False
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, strum_macros::Display)]
+#[derive(Debug, Clone, Copy, PartialOrd, strum_macros::Display)]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -809,6 +897,63 @@ pub enum Literal {
     #[strum(to_string = "{0}")]
     AbstractFloat(f64),
 }
+
+impl std::hash::Hash for Literal {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        use Literal::{AbstractFloat, AbstractInt, F32, F64, I32, I64, U32, U64};
+        match self {
+            F64(f) => {
+                0u8.hash(state);
+                f.to_bits().hash(state);
+            }
+            F32(f) => {
+                1u8.hash(state);
+                f.to_bits().hash(state);
+            }
+            U32(u) => {
+                2u8.hash(state);
+                u.hash(state);
+            }
+            I32(i) => {
+                3u8.hash(state);
+                i.hash(state);
+            }
+            U64(u) => {
+                4u8.hash(state);
+                u.hash(state);
+            }
+            I64(i) => {
+                5u8.hash(state);
+                i.hash(state);
+            }
+            AbstractInt(i) => {
+                6u8.hash(state);
+                i.hash(state);
+            }
+            AbstractFloat(f) => {
+                7u8.hash(state);
+                f.to_bits().hash(state);
+            }
+        }
+    }
+}
+
+impl PartialEq for Literal {
+    fn eq(&self, other: &Self) -> bool {
+        use Literal::{AbstractFloat, AbstractInt, F32, F64, I32, I64, U32, U64};
+        match (self, other) {
+            (F64(a), F64(b)) | (AbstractFloat(a), AbstractFloat(b)) => a.to_bits() == b.to_bits(),
+            (F32(a), F32(b)) => a.to_bits() == b.to_bits(),
+            (U32(a), U32(b)) => a == b,
+            (I32(a), I32(b)) => a == b,
+            (U64(a), U64(b)) => a == b,
+            (I64(a), I64(b)) | (AbstractInt(a), AbstractInt(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Literal {}
 
 macro_rules! from_lit_impl {
     ($ty:ty, $variant:path) => {
@@ -873,7 +1018,9 @@ impl From<std::num::NonZeroI16> for Literal {
 /// for both to be used interchangably.
 ///
 /// It also simplifies the logic for storing references to variables.
-#[derive(Clone, Debug, strum_macros::Display, PartialEq)]
+///
+/// Sometimes, we would like to be able to use a variable as a constraint.
+#[derive(Clone, Debug, strum_macros::Display)]
 pub enum Term {
     #[strum(to_string = "{0}")]
     Expr(Handle<AbcExpression>),
@@ -885,6 +1032,41 @@ pub enum Term {
     Predicate(Handle<Predicate>),
     /// An empty term or predicate.
     Empty,
+}
+
+impl PartialEq for Term {
+    fn eq(&self, other: &Self) -> bool {
+        self.is_identical(other)
+    }
+}
+
+impl Eq for Term {}
+
+impl std::hash::Hash for Term {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        use Term::{Empty, Expr, Literal, Predicate, Var};
+        match self {
+            Expr(inner) => {
+                0u8.hash(state);
+                Arc::as_ptr(inner).hash(state);
+            }
+            Var(var) => {
+                1u8.hash(state);
+                Arc::as_ptr(var).hash(state);
+            }
+            Literal(l) => {
+                2u8.hash(state);
+                l.hash(state);
+            }
+            Predicate(pred) => {
+                3u8.hash(state);
+                Arc::as_ptr(pred).hash(state);
+            }
+            Empty => {
+                4u8.hash(state);
+            }
+        }
+    }
 }
 
 impl Term {
@@ -944,24 +1126,6 @@ impl SubstituteTerm for Term {
     }
 }
 
-// `true` and `false` are predicates
-// A predicate is really any expression that evaluates to a boolean.
-impl From<bool> for Term {
-    /// Converts the `bool` to [`Predicate::True`] or [`Predicate::False`]
-    ///
-    /// [`Predicate::True`]: crate::Predicate::True
-    /// [`Predicate::False`]: crate::Predicate::False
-    fn from(val: bool) -> Self {
-        Self::Predicate(if val {
-            Predicate::True.into()
-        } else {
-            Predicate::False.into()
-        })
-    }
-}
-
-// Blanket implementation for converting anything that can be converted to a
-//literal into a term.
 impl<T: Into<Literal>> From<T> for Term {
     fn from(val: T) -> Self {
         Term::Literal(val.into())
@@ -971,11 +1135,14 @@ impl<T: Into<Literal>> From<T> for Term {
 /*
 Implementation of predicate constructors for term
 */
+
 impl Term {
-    /// Create a new unit predicate term.
     #[must_use]
     pub fn new_unit_pred(p: Term) -> Self {
-        Term::Predicate(Predicate::new_unit(p))
+        match p {
+            Term::Predicate(_) => p,
+            _ => Term::Predicate(Predicate::Unit(p).into()),
+        }
     }
     /// Create a term holding the `true` predicate
     #[must_use]
@@ -1013,14 +1180,12 @@ impl Term {
     ///
     /// [`Predicate::Not`]: crate::Predicate::Not
     #[must_use]
-    pub fn new_not(t: Term) -> Self {
-        Term::Predicate(match t {
-            Term::Predicate(pred) => Predicate::new_not(pred),
-            _ => Predicate::new_not(Predicate::new_unit(t)),
-        })
+    pub fn new_logical_not(t: Term) -> Self {
+        Term::Predicate(Predicate::new_not(t))
     }
 }
 
+// Implementation of expr constructors for Term
 impl Term {
     /// Constructs a new `Term::Var`
     #[must_use]
@@ -1057,7 +1222,7 @@ impl Term {
 
     #[must_use]
     pub fn new_index_access(base: Term, index: Term) -> Self {
-        AbcExpression::IndexAccess { base, index }.into()
+        Term::Expr(AbcExpression::IndexAccess { base, index }.into())
     }
 
     /// Creates a new field access expression
@@ -1091,8 +1256,13 @@ impl Term {
     }
 
     #[must_use]
+    pub fn new_unary_op(op: UnaryOp, term: Term) -> Self {
+        Self::Expr(AbcExpression::UnaryOp(op, term).into())
+    }
+
+    #[must_use]
     pub fn new_binary_op(op: BinaryOp, lhs: Term, rhs: Term) -> Self {
-        AbcExpression::BinaryOp(op, lhs, rhs).into()
+        Self::Expr(AbcExpression::BinaryOp(op, lhs, rhs).into())
     }
 
     #[must_use]
@@ -1103,12 +1273,12 @@ impl Term {
             Term::Predicate(p) => p.clone(),
             _ => Predicate::new_unit(pred),
         });
-        AbcExpression::Select(pred, then_expr, else_expr).into()
+        Self::Expr(AbcExpression::Select(pred, then_expr, else_expr).into())
     }
 
     #[must_use]
-    pub fn make_array_length(var: Term) -> Self {
-        AbcExpression::ArrayLength(var).into()
+    pub fn new_array_length(var: Term) -> Self {
+        Self::Expr(AbcExpression::ArrayLength(var).into())
     }
 }
 
@@ -1157,16 +1327,6 @@ mod test {
     #[fixture]
     fn var_y() -> Term {
         Term::new_var("y")
-    }
-
-    #[fixture]
-    fn literal_true() -> Term {
-        Term::Predicate(Predicate::True.into())
-    }
-
-    #[fixture]
-    fn literal_false() -> Term {
-        Term::Predicate(Predicate::False.into())
     }
 
     #[rstest]
@@ -1228,7 +1388,8 @@ mod test {
 
     /// Ensure `true` or x = x
     #[rstest]
-    fn test_or_with_true(literal_true: Term) {
+    fn test_or_with_true() {
+        let literal_true = Term::new_literal_true();
         // Get some predicate., e.g. 'x'
         let any_pred = Term::new_var(Var {
             name: "X".to_string(),
@@ -1239,17 +1400,14 @@ mod test {
     }
 
     #[rstest]
-    fn test_term_new_comparison(var_x: Term) {
-        let var_y = Var {
-            name: "y".to_string(),
-        };
-        let term = Term::new_comparison(CmpOp::Eq, var_x, Term::from(var_y));
+    fn test_term_new_comparison(var_x: Term, var_y: Term) {
+        let term = Term::new_comparison(CmpOp::Eq, var_x, var_y);
         assert_eq!(term.to_string(), "(x) == (y)");
     }
 
     #[rstest]
     fn test_term_new_not(var_x: Term) {
-        let term = Term::new_not(var_x);
+        let term = Term::new_logical_not(var_x);
         assert_eq!(term.to_string(), "!(x)");
     }
 
@@ -1305,7 +1463,7 @@ mod test {
     #[rstest]
     fn test_term_make_array_length() {
         let var = Term::new_var(Var::from("arr"));
-        let term = Term::make_array_length(var);
+        let term = Term::new_array_length(var);
         assert_eq!(term.to_string(), "length(arr)");
     }
 

@@ -8,8 +8,9 @@
 use log::info as log_info;
 
 use crate::{
-    AbcExpression, AbcType, Constraint, ConstraintOp, FastHashMap, Handle, OpaqueMarker, Predicate,
-    SubstituteTerm, Summary, Term, Var, NONETYPE, RET,
+    AbcExpression, AbcScalar, AbcType, BinaryOp, CmpOp, Constraint, ConstraintOp, FastHashMap,
+    Handle, Literal, OpaqueMarker, Predicate, SubstituteTerm, Summary, Term, UnaryOp, Var,
+    NONETYPE,
 };
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -30,6 +31,38 @@ pub enum ConstraintError {
     InvalidArguments,
     #[error("Attempt to assign a return value to a function with no return value")]
     NoReturnValue,
+    #[error("Attempt to assign two distinct types to a term.")]
+    TypeMismatch,
+}
+
+#[allow(non_snake_case)]
+/// Implementing `TermArena` means that Terms can be returned from the arena.
+pub trait TermArena {
+    // Expressions
+    fn new_binary_op(&mut self, op: BinaryOp, lhs: Term, rhs: Term) -> Term;
+    fn new_select(&mut self, cond: Term, if_true: Term, if_false: Term) -> Term;
+    fn new_unary_op(&mut self, op: UnaryOp, rhs: Term) -> Term;
+    fn new_var(&mut self, name: Var) -> Term;
+    fn new_splat(&mut self, term: Term, count: u32) -> Term;
+    fn new_array_length(&mut self, var: Term) -> Term;
+    fn new_cast(&mut self, term: Term, ty: AbcScalar) -> Term;
+    fn new_call(&mut self, func: Handle<Summary>, args: Vec<Term>) -> Term;
+    fn new_empty(&mut self) -> Term;
+    fn new_struct_access(&mut self, term: Term, field: String, ty: Handle<AbcType>) -> Term;
+    fn new_index_access(&mut self, term: Term, index: Term) -> Term;
+
+    // Predicates
+    fn new_logical_and(&mut self, lhs: Term, rhs: Term) -> Term;
+    fn new_logical_or(&mut self, lhs: Term, rhs: Term) -> Term;
+    fn new_logical_not(&mut self, term: Term) -> Term;
+    fn new_literal_false(&mut self) -> Term;
+    fn new_literal_true(&mut self) -> Term;
+    fn new_unit_pred(&mut self, term: Term) -> Term;
+    fn new_comparison(&mut self, op: CmpOp, lhs: Term, rhs: Term) -> Term;
+
+    // Literals
+
+    fn new_literal_term<T: Into<Literal>>(&mut self, lit: T) -> Term;
 }
 
 #[allow(clippy::missing_errors_doc)]
@@ -203,7 +236,7 @@ pub struct ConstraintHelper {
     /// This is so that they have an easy time printing
     ///
     /// When we make the interface with the constraint solver itself, we will use a real handle, like naga's arena.
-    predicate_stack: Vec<Handle<Predicate>>,
+    pub(crate) predicate_stack: Vec<Handle<Predicate>>,
 
     /// When popping a predicate stack, if we had a return, then we add the inverse of the condition to the global predicate stack's expression list
     ///
@@ -235,40 +268,45 @@ pub struct ConstraintHelper {
     /// {!(x < 10 || z <= 11)} y_3 = 4
     /// ```
     /// E.g., if we hit a return, then the new return predicate becomes the `or` of the existing one.
-    return_predicate: Option<Handle<Predicate>>,
+    pub(crate) return_predicate: Option<Handle<Predicate>>,
 
     /// The set of predicates that are appended to all future constraints.
     ///
     /// This is used in conjunction with the `had_return` field.
     /// As soon as a return is marked, its predicate is appended to the `permanent_predicate` field.
-    permanent_predicate: Option<Handle<Predicate>>,
+    pub(crate) permanent_predicate: Option<Handle<Predicate>>,
 
     /// Summaries can't be nested, so we only need to track what the active one is.
     /// When we pop a summary, we clear out the predicate stack.
-    active_summary: Option<Summary>,
+    pub(crate) active_summary: Option<Summary>,
 
     // Statements are the set of statements that comprise the constraint system...
-    statements: Vec<String>,
+    pub(crate) statements: Vec<String>,
 
     /// Summaries contain the set of summaries that have previously been parsed.
-    summaries: Vec<Handle<Summary>>,
+    pub(crate) summaries: Vec<Handle<Summary>>,
 
-    /// Types that bave been declared in the helper.
-    types: Vec<Handle<AbcType>>,
+    /// Types that have been declared in the helper.
+    pub(crate) types: Vec<Handle<AbcType>>,
+
+    /// Map of terms to their underlying type.
+    pub(crate) term_type_map: FastHashMap<Term, Handle<AbcType>>,
 
     /// Global constraints not tied to a function
-    global_constraints: Vec<Constraint>,
+    pub(crate) global_constraints: Vec<Constraint>,
 
     /// Global assumptions not tied to a function
-    global_assumptions: Vec<Constraint>,
+    pub(crate) global_assumptions: Vec<Constraint>,
 
     /// Map from varnames to an ssa counter..
-    ssa_map: FastHashMap<String, u32>,
+    pub(crate) ssa_map: FastHashMap<String, u32>,
 
     /// The number of loop layers that are active.
     ///
     /// Incremented when a loop begins, decremented when a loop ends.
-    loop_depth: u8,
+    pub(crate) loop_depth: u8,
+
+    pub(crate) terms: Vec<Term>,
 }
 
 impl ConstraintHelper {
@@ -515,12 +553,16 @@ impl ConstraintInterface for ConstraintHelper {
     /// # Errors
     /// Never (always returns an Ok)
     fn add_expression(&mut self, expr: AbcExpression) -> Result<Term, Self::E> {
-        Ok(Term::Expr(expr.into()))
+        let term = Term::Expr(expr.into());
+        self.terms.push(term.clone());
+        Ok(term)
     }
 
     /// Create a new variable, returning a `Term` that wraps it.
-    fn declare_var(&mut self, name: Var) -> Result<Term, ConstraintError> {
-        Ok(Term::Var(name.into()))
+    fn declare_var(&mut self, var: Var) -> Result<Term, ConstraintError> {
+        let term = Term::new_var(var);
+        self.terms.push(term.clone());
+        Ok(term)
     }
 
     /// Mark a break statement
@@ -532,7 +574,7 @@ impl ConstraintInterface for ConstraintHelper {
     }
 
     /// Mark a continue statement
-    ///
+    ///6a
     /// # Errors
     /// Errors if there is no active loop context.
     fn mark_continue(&mut self) -> Result<(), Self::E> {
@@ -541,12 +583,13 @@ impl ConstraintInterface for ConstraintHelper {
 
     /// Mark the type of the provided term
     fn mark_type(&mut self, term: Term, ty: Self::Handle<AbcType>) -> Result<(), Self::E> {
-        // If we are already given a handle, then we just use that
-        // Otherwise, if we are given a string, then we create a new var.
-
-        // if let Some(arc_var) = Arc::downcast::<Var>(var)
-        self.write(format!("type({term}) = {ty}"));
-        Ok(())
+        self.write(format!("type({term}) = {ty})"));
+        if let std::collections::hash_map::Entry::Vacant(e) = self.term_type_map.entry(term) {
+            e.insert(ty.clone());
+            Ok(())
+        } else {
+            Err(ConstraintError::TypeMismatch)
+        }
     }
 
     /// Mark the return type for the active summary.
@@ -599,13 +642,25 @@ impl ConstraintInterface for ConstraintHelper {
 
     /// When we encounter a return, push the current predicate on the current stack, if there is a current predicate stack...
     fn mark_return(&mut self, retval: Option<Term>) -> Result<(), ConstraintError> {
-        if self.active_summary.is_none() {
-            return Err(ConstraintError::SummaryError);
+        match self.active_summary {
+            None => {
+                return Err(ConstraintError::SummaryError);
+            }
+            Some(Summary {
+                ret_term: Term::Empty,
+                ..
+            }) => (),
+            Some(Summary {
+                ret_term: ref r, ..
+            }) if retval.is_some() => {
+                self.add_constraint(r.clone(), ConstraintOp::Assign, unsafe {
+                    /* Unsafe unwrap allowed here due to is_some() check above. */
+                    retval.unwrap_unchecked()
+                })?;
+            }
+            _ => (),
         }
-        // Add the constraint on retval, if there is a retval.
-        if let Some(expr) = retval {
-            self.add_constraint(RET.clone(), ConstraintOp::Assign, expr)?;
-        }
+
         // It is likely an error if the return predicate already exists and is not None,
         // But just in case, we will make the return predicate the `or` of the current predicate stack...
         let pred_ctx = self
