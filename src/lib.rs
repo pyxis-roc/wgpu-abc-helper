@@ -873,8 +873,6 @@ impl From<std::num::NonZeroI16> for Literal {
 /// for both to be used interchangably.
 ///
 /// It also simplifies the logic for storing references to variables.
-///
-/// Sometimes, we would like to be able to use a variable as a constraint.
 #[derive(Clone, Debug, strum_macros::Display, PartialEq)]
 pub enum Term {
     #[strum(to_string = "{0}")]
@@ -962,6 +960,8 @@ impl From<bool> for Term {
     }
 }
 
+// Blanket implementation for converting anything that can be converted to a
+//literal into a term.
 impl<T: Into<Literal>> From<T> for Term {
     fn from(val: T) -> Self {
         Term::Literal(val.into())
@@ -971,8 +971,8 @@ impl<T: Into<Literal>> From<T> for Term {
 /*
 Implementation of predicate constructors for term
 */
-
 impl Term {
+    /// Create a new unit predicate term.
     #[must_use]
     pub fn new_unit_pred(p: Term) -> Self {
         Term::Predicate(Predicate::new_unit(p))
