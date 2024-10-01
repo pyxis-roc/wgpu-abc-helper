@@ -478,7 +478,7 @@ impl Predicate {
 }
 
 /// Enum for different expression kinds
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum AbcExpression {
     /// A unary operator, e.g., -x
     UnaryOp(UnaryOp, Term),
@@ -819,6 +819,8 @@ pub struct Summary {
     ///
     /// These encode information such as variable assignments.
     pub assumptions: Vec<Constraint>,
+
+    pub(crate) term_type_map: FastHashMap<Term, Handle<AbcType>>,
 }
 
 /// Displaying a Summary just shows the name of the function.
@@ -846,6 +848,7 @@ impl Summary {
             return_type: NONETYPE.clone(),
             assumptions: Vec::new(),
             ret_term: Term::Empty,
+            term_type_map: FastHashMap::default(),
         }
     }
 

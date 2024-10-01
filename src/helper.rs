@@ -229,7 +229,7 @@ pub trait ConstraintInterface {
 /// The main helper class for the constraint system.
 ///
 /// Tracks a module and each of the constraints, variables, and types it contains.
-#[derive(Default)]
+#[derive(Default, Debug)]
 
 pub struct ConstraintHelper {
     /// For right now, the handles are just Arcs.
@@ -583,7 +583,7 @@ impl ConstraintInterface for ConstraintHelper {
 
     /// Mark the type of the provided term
     fn mark_type(&mut self, term: Term, ty: Self::Handle<AbcType>) -> Result<(), Self::E> {
-        self.write(format!("type({term}) = {ty})"));
+        self.write(format!("type({term}) = {ty}"));
         if let std::collections::hash_map::Entry::Vacant(e) = self.term_type_map.entry(term) {
             e.insert(ty.clone());
             Ok(())
@@ -813,6 +813,7 @@ impl ConstraintInterface for ConstraintHelper {
             return_type: NONETYPE.clone(),
             assumptions: Vec::new(),
             ret_term: Term::Empty,
+            term_type_map: FastHashMap::default(),
         };
         self.active_summary = Some(new_summary);
 
