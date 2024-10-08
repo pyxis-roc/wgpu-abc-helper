@@ -834,7 +834,7 @@ impl ConstraintInterface for ConstraintHelper {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
-    use crate::{AbcScalar, CmpOp, Term};
+    use crate::{AbcScalar, Term};
     use rstest::{fixture, rstest};
     #[fixture]
     fn constraint_helper<'a>() -> ConstraintHelper {
