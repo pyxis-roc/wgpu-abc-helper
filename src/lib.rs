@@ -88,11 +88,14 @@ where
 }
 
 // For right now, everything will be a string... We will not do type checking.
+
+/// A variable. Used by terms to refer to a persistent, mutable value.
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Var {
     /// The name of the variable
     pub name: String,
-    // pub marker: OpaqueMarker<T>,
 }
 
 /// Create a new variable with the name
@@ -115,6 +118,8 @@ pub enum UnaryOp {
     Minus,
 }
 
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
     #[strum(to_string = "+")]
@@ -143,6 +148,9 @@ pub enum BinaryOp {
     Shr,
 }
 
+/// A comparison operator used by predicates.
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CmpOp {
     #[strum(to_string = "==")]
@@ -191,16 +199,20 @@ impl From<CmpOp> for ConstraintOp {
     }
 }
 
+/// Constraints are the building blocks of the constraint system.
+/// They establish relationships between terms that limit their domain.
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Constraint {
-    /// An assignment constraint
+    /// An assignment constraint, e.g. x = y
     Assign {
         guard: Option<Handle<Predicate>>,
         lhs: Term,
         rhs: Term,
     },
 
-    /// A comparison constraint.
+    /// A comparison constraint, e.g. length(x) < y
     Cmp {
         guard: Option<Handle<Predicate>>,
         lhs: Term,
@@ -208,11 +220,7 @@ pub enum Constraint {
         rhs: Term,
     },
 
-    /// An expression constraint
-    ///
-    /// Used only for call expressions that do not have a return value
-    /// This indicates that the constraints from the call expression are required
-    /// even though the result is not stored.
+    /// An expression constraint, e.g. x (In this case, the expression must be a predicate term.)
     Expression {
         guard: Option<Handle<Predicate>>,
         term: Term,
@@ -283,6 +291,8 @@ impl std::fmt::Display for Constraint {
     }
 }
 
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(strum_macros::Display, Debug, Clone, PartialEq)]
 pub enum Predicate {
     // Conjunction of two predicates, e.g. x && y
@@ -447,6 +457,8 @@ impl Predicate {
 }
 
 /// Enum for different expression kinds
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum AbcExpression {
     /// A binary operator, e.g., x + y
@@ -682,6 +694,8 @@ impl std::fmt::Display for AbcExpression {
 // Design: We have a helper class. This helper class holds the variables.
 
 /// Provides an interface to define a type in the constraint system.
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum AbcType {
     // A user defined compound type.
@@ -735,6 +749,8 @@ impl std::fmt::Display for AbcType {
 /// bounds on them. E.g., an i32 is assumed to have bounds -2^31 to 2^31 - 1.
 ///
 /// Note that for Sint, Uint, and Float, the width is in **bytes**.
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AbcScalar {
     /// Signed integer type. The width is in bytes.
@@ -768,6 +784,8 @@ impl std::fmt::Display for AbcScalar {
 
 /// A summary is akin to a function reference.
 /// For right now, we are just storing the name and the nargs...
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Summary {
     pub name: String,
@@ -933,6 +951,8 @@ impl From<std::num::NonZeroI16> for Literal {
 /// for both to be used interchangably.
 ///
 /// It also simplifies the logic for storing references to variables.
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(Clone, Debug, strum_macros::Display, PartialEq)]
 pub enum Term {
     #[strum(to_string = "{0}")]
