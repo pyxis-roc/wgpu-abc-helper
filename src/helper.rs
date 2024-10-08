@@ -18,6 +18,8 @@ pub enum ConstraintError {
     PredicateStackEmpty,
     #[error("Active summary is not set")]
     SummaryError,
+    #[error("Return type already set")]
+    DuplicateReturnType,
     #[error("This is not yet implemented")]
     NotImplemented(String),
     #[error("Attempt to end a loop when no loop is active")]
@@ -357,7 +359,8 @@ impl ConstraintHelper {
         &self,
         stream: &mut impl std::io::Write,
     ) -> Result<usize, std::io::Error> {
-        stream.write(self.statements.join("\n").as_bytes())
+        stream.write_all(self.statements.join("\n").as_bytes())?;
+        stream.write("\n".as_bytes())
     }
 
     /// Join the predicate stack together, returning a predicate which is the conjunction of all predicates in the stack.
@@ -553,15 +556,17 @@ impl ConstraintInterface for ConstraintHelper {
     /// Can only be called once per active summary.
     ///
     /// # Errors
-    /// Returns [`ConstraintError::SummaryError`] if there is no active summary.
+    /// [`ConstraintError::SummaryError`] if there is no active summary, or if
+    /// the summary has already had its return type marked.
     fn mark_return_type(&mut self, ty: Self::Handle<AbcType>) -> Result<(), Self::E> {
         self.write(format!("type(@ret) = {ty}"));
         match self.active_summary {
             None => Err(ConstraintError::SummaryError),
-            Some(ref mut summary) => {
+            Some(ref mut summary) if matches!(summary.return_type.as_ref(), AbcType::NoneType) => {
                 summary.return_type = ty;
                 Ok(())
             }
+            _ => Err(ConstraintError::DuplicateReturnType),
         }
     }
 
@@ -804,7 +809,10 @@ pub(crate) mod test {
     fn check_constraint_output(helper: &ConstraintHelper, expected: &str) {
         let mut stream = Vec::new();
         helper.write_to_stream(&mut stream).unwrap();
-        assert_eq!(String::from_utf8(stream).unwrap(), expected.to_string());
+        assert_eq!(
+            String::from_utf8(stream).unwrap().trim(),
+            expected.to_string().trim()
+        );
     }
 
     #[rstest]

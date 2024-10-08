@@ -40,6 +40,9 @@ provides a few mechanisms to handle loops.
 [`ConstraintHelper`]: crate::ConstraintHelper
 */
 
+// Clippy lints
+#![allow(clippy::must_use_candidate)]
+
 use std::{fmt::Write, sync::Arc};
 // use std::rc::Rc
 
@@ -478,6 +481,30 @@ pub enum AbcExpression {
     /// The empty expression. This is meant to be used as a placeholder for constraint operations that have no expression.
     /// Displaying this is therefore a parse error.
     Empty,
+    /// A store expression, which represents an assignment to an array.
+    ///
+    /// A store resolves to a copy of the base array, by value,
+    /// with the value at the index replaced by the new value.
+    /// This allows the domain of the
+    Store {
+        base: Term,
+        index: Term,
+        value: Term,
+    },
+
+    /// A store expression, which represents an assignment to a struct field.
+    ///
+    /// A struct store resolves to a copy of the base struct, by value,
+    /// with the value at the field replaced by the new value.
+    /// We keep the type here to simplify our analysis. We don't want to have
+    /// to go look up what the type of the `term` is every time we have a struct
+    /// access to figure out which field we are updating..
+    StructStore {
+        base: Term,
+        fieldname: String,
+        ty: Handle<AbcType>,
+        value: Term,
+    },
 }
 
 //
@@ -520,6 +547,22 @@ macro_rules! expression_sub {
             Self::IndexAccess { base, index } => Self::IndexAccess {
                 base: base.$name($($args),*),
                 index: index.$name($($args),*),
+            },
+            Self::Store { base, index, value } => Self::Store {
+                base: base.$name($($args),*),
+                index: index.$name($($args),*),
+                value: value.$name($($args),*),
+            },
+            Self::StructStore {
+                base,
+                fieldname,
+                ty,
+                value,
+            } => Self::StructStore {
+                base: base.$name($($args),*),
+                fieldname: fieldname.clone(),
+                ty: ty.clone(),
+                value: value.$name($($args),*),
             },
         }
     }
@@ -614,6 +657,17 @@ impl std::fmt::Display for AbcExpression {
             }
             AbcExpression::IndexAccess { base, index } => write!(f, "{base}[{index}]"),
             AbcExpression::Empty => write!(f, "%PARSE_ERROR"),
+            AbcExpression::Store { base, index, value } => {
+                write!(f, "store({base}, {index}, {value})")
+            }
+            AbcExpression::StructStore {
+                base,
+                fieldname,
+                value,
+                ..
+            } => {
+                write!(f, "store_field({base}, {fieldname}, {value})")
+            }
         }
     }
 }
@@ -651,6 +705,12 @@ pub enum AbcType {
     ///
     /// Currently used as the type of variables that cannot be used, but whose expressions are needed
     NoneType,
+}
+
+impl AbcType {
+    pub fn is_none_type(&self) -> bool {
+        matches!(self, AbcType::NoneType)
+    }
 }
 
 impl std::fmt::Display for AbcType {
@@ -1109,6 +1169,29 @@ impl Term {
     #[must_use]
     pub fn make_array_length(var: Term) -> Self {
         AbcExpression::ArrayLength(var).into()
+    }
+
+    #[must_use]
+    pub fn new_store(base: Term, index: Term, value: Term) -> Self {
+        AbcExpression::Store { base, index, value }.into()
+    }
+
+    #[must_use]
+    pub fn new_struct_store(
+        base: Term,
+        fieldname: String,
+        ty: Handle<AbcType>,
+        value: Term,
+    ) -> Self {
+        Term::Expr(
+            AbcExpression::StructStore {
+                base,
+                fieldname,
+                ty,
+                value,
+            }
+            .into(),
+        )
     }
 }
 
