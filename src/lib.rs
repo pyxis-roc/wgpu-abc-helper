@@ -44,7 +44,6 @@ provides a few mechanisms to handle loops.
 #![allow(clippy::must_use_candidate)]
 
 use std::{fmt::Write, sync::Arc};
-// use std::rc::Rc
 
 type FastHashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 
