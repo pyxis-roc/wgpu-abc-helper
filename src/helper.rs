@@ -13,8 +13,8 @@ use serde::Serialize;
 use log::info as log_info;
 
 use crate::{
-    AbcExpression, AbcType, Constraint, ConstraintOp, FastHashMap, Handle, OpaqueMarker, Predicate,
-    SubstituteTerm, Summary, Term, Var, NONETYPE, RET,
+    AbcExpression, AbcType, BinaryOp, CmpOp, Constraint, ConstraintOp, FastHashMap, Handle,
+    OpaqueMarker, Predicate, SubstituteTerm, Summary, Term, Var, NONETYPE, RET,
 };
 
 #[cfg_attr(feature = "serialize", derive(Serialize))]
@@ -39,6 +39,10 @@ pub enum ConstraintError {
     InvalidArguments,
     #[error("Attempt to assign a return value to a function with no return value")]
     NoReturnValue,
+    #[error("Unsupported loop operation")]
+    UnsupportedLoopOperation,
+    #[error("Unsupported term in loop condition")]
+    UnsupportedLoopCondition(Term),
 }
 
 #[allow(clippy::missing_errors_doc)]
@@ -193,6 +197,19 @@ pub trait ConstraintInterface {
     /// Marks a continue statement
     fn mark_continue(&mut self) -> Result<(), Self::E>;
 
+    /// Mark a variable that is used as a loop counter
+    fn mark_loop_variable(
+        &mut self,
+        var: Term,  // The variable that is incremented
+        init: Term, // What it is initialized to.
+        // What this term is compared to
+
+        // How the term is incremented
+        inc_term: Term,
+
+        inc_op: BinaryOp,
+    ) -> Result<(), Self::E>;
+
     /// Mark the range of a term.
     fn mark_range<T>(&mut self, var: Term, low: T, high: T) -> Result<(), Self::E>
     where
@@ -241,11 +258,11 @@ impl ConstraintModule {
 /// Tracks a module and each of the constraints, variables, and types it contains.
 #[derive(Default)]
 pub struct ConstraintHelper {
-    /// For right now, the handles are just Arcs.
-    /// This is so that they have an easy time printing
-    ///
-    /// When we make the interface with the constraint solver itself, we will use a real handle, like naga's arena.
+    /// The stack of the conditions in the current predicate block..
     predicate_stack: Vec<Handle<Predicate>>,
+
+    /// The stack of conditions in the current loop block.
+    loop_predicate_stack: Vec<Handle<Predicate>>,
 
     /// When popping a predicate stack, if we had a return, then we add the inverse of the condition to the global predicate stack's expression list
     ///
@@ -362,7 +379,14 @@ impl ConstraintHelper {
     /// `None` if there should be no predicate guard.
     fn make_guard(&self) -> Option<Handle<Predicate>> {
         let pred_block_pred = self.join_predicate_stack();
-        match (&self.permanent_predicate, pred_block_pred) {
+        let perm_pred = match (&self.permanent_predicate, pred_block_pred) {
+            (Some(perm), Some(pred)) => Some(Predicate::new_and(perm.clone(), pred)),
+            (Some(ref p), None) | (None, Some(ref p)) => Some(p.clone()),
+            (None, None) => None,
+        };
+        // Conjunction with the loop predicate
+        let loop_pred = self.join_loop_predicate_stack();
+        match (perm_pred, loop_pred) {
             (Some(perm), Some(pred)) => Some(Predicate::new_and(perm.clone(), pred)),
             (Some(ref p), None) | (None, Some(ref p)) => Some(p.clone()),
             (None, None) => None,
@@ -405,6 +429,13 @@ impl ConstraintHelper {
     /// Join the predicate stack together, returning a predicate which is the conjunction of all predicates in the stack.
     fn join_predicate_stack(&self) -> Option<Handle<Predicate>> {
         self.predicate_stack
+            .iter()
+            .cloned()
+            .reduce(Predicate::new_and)
+    }
+
+    fn join_loop_predicate_stack(&self) -> Option<Handle<Predicate>> {
+        self.loop_predicate_stack
             .iter()
             .cloned()
             .reduce(Predicate::new_and)
@@ -470,6 +501,47 @@ impl ConstraintInterface for ConstraintHelper {
         let ty: Self::Handle<AbcType> = ty.into();
         self.module.types.push(ty.clone());
         Ok(ty)
+    }
+
+    // When we begin loop, then we get an induction variable
+    // We can then mark anything that uses this induction variable..
+    fn mark_loop_variable(
+        &mut self,
+        var: Term, // The variable that is incremented
+        // What it is initialized to.
+        init: Term,
+        // How the term is incremented
+        inc_term: Term,
+
+        inc_op: BinaryOp,
+    ) -> Result<(), Self::E> {
+        // If term is increasing, then add an assumption that it is greater than the initial value.
+        // right now, we only support increment expressions on scalars.
+        match (inc_term, inc_op) {
+            // Adding a positive literal...
+            (
+                Term::Literal(crate::Literal::U32(1..) | crate::Literal::I32(1..)),
+                BinaryOp::Plus | BinaryOp::Times | BinaryOp::Shl,
+            )
+            | (Term::Literal(crate::Literal::I32(i32::MIN..=-1)), BinaryOp::Minus) => {
+                // We know that v is between 1 and 10...
+                self.add_assumption(var, ConstraintOp::Cmp(CmpOp::Geq), init)?;
+            }
+            // Decreases if we are subtracting a positive literal
+            (
+                Term::Literal(crate::Literal::U32(1..) | crate::Literal::I32(1..)),
+                BinaryOp::Minus | BinaryOp::Shr,
+            )
+            | (Term::Literal(crate::Literal::I32(i32::MIN..=-1)), BinaryOp::Plus) => {
+                self.add_assumption(var, ConstraintOp::Cmp(CmpOp::Leq), init)?;
+            }
+            _ => {
+                return Err(ConstraintError::UnsupportedLoopOperation);
+            }
+        }
+
+        // Now, we check against the limit..
+        Ok(())
     }
 
     /// Add the constraints of the summary by invoking the function call with the proper arguments.
@@ -753,9 +825,28 @@ impl ConstraintInterface for ConstraintHelper {
     /// HOWEVER, for the time being, we can't do any of this fancy handling
     /// So we are just going to emit a "`begin_loop(condition)`" statement, and will assume this is a part of the constraint system.
     fn begin_loop(&mut self, condition: Term) -> Result<(), ConstraintError> {
-        self.write(format!("begin_loop({condition})"));
+        // In begin_loop, we add a new predicate block corresponding to the loop predicate.
+        // Here, we need to begin a new loop predicate block.
+        match condition {
+            Term::Predicate(p) => {
+                self.loop_predicate_stack.push(p);
+            }
+            Term::Var(v) => {
+                self.loop_predicate_stack
+                    .push(Predicate::new_unit(Term::Var(v)));
+            }
+            _ => {
+                return Err(ConstraintError::UnsupportedLoopCondition(condition));
+            }
+        }
+
+        // When we hit a break, we are overestimating the range of the loop variable.
+
         // We begin the predicate block here...
         // self.begin_predicate_block(condition);
+        if self.loop_depth != 0 {
+            return Err(ConstraintError::NotImplemented("Nested loops".to_string()));
+        }
         if self.loop_depth == u8::MAX {
             return Err(ConstraintError::MaxLoopDepthExceeded);
         }
@@ -765,7 +856,12 @@ impl ConstraintInterface for ConstraintHelper {
 
     /// End a loop context.
     fn end_loop(&mut self) -> Result<(), ConstraintError> {
-        self.write("end_loop()".to_string());
+        // At the end of a loop, we pop the loop predicate stack.
+        self.loop_predicate_stack
+            .pop()
+            .ok_or(ConstraintError::PredicateStackEmpty)?;
+        // check if it an assignment constraint,
+        // and if it is, convert it into a range constraint.
         if self.loop_depth == 0 {
             return Err(ConstraintError::NotInLoopContext);
         }
