@@ -49,6 +49,9 @@ type FastHashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 
 use lazy_static::lazy_static;
 
+#[cfg(feature = "cffi")]
+pub mod cffi;
+
 /// Objects that derive this trait mean they support replacing terms within them with other terms.
 trait SubstituteTerm {
     /// This should always return a clone of `to` if `self.is_identical(from)` is true.
@@ -112,6 +115,7 @@ impl std::fmt::Display for Var {
 
 /// A unary operation. Currently only supports unary minus.
 #[derive(strum_macros::Display, Debug, Clone, Copy)]
+#[cfg_attr(feature = "cffi", repr(C))]
 pub enum UnaryOp {
     #[strum(to_string = "-")]
     Minus,
@@ -119,6 +123,7 @@ pub enum UnaryOp {
 
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+#[cfg_attr(feature = "cffi", repr(C))]
 #[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
     #[strum(to_string = "+")]
@@ -150,10 +155,11 @@ pub enum BinaryOp {
 /// A comparison operator used by predicates.
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+#[cfg_attr(feature = "cffi", repr(C))]
 #[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CmpOp {
     #[strum(to_string = "==")]
-    Eq,
+    Eq = 0,
     #[strum(to_string = "!=")]
     Neq,
     #[strum(to_string = "<")]
@@ -166,8 +172,22 @@ pub enum CmpOp {
     Geq,
 }
 
+// impl Display for CmpOp {
+//     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+//         match self {
+//             CmpOp::Eq => write!(f, "=="),
+//             CmpOp::Neq => write!(f, "!="),
+//             CmpOp::Lt => write!(f, "<"),
+//             CmpOp::Gt => write!(f, ">"),
+//             CmpOp::Leq => write!(f, "<="),
+//             CmpOp::Geq => write!(f, ">="),
+//         }
+//     }
+// }
+
 impl CmpOp {
-    /// Negate the predicate operation
+    /// Construct a new comparison operator that represents
+    /// the opposite of the operator.
     #[must_use]
     pub fn negation(&self) -> Self {
         match self {
@@ -183,6 +203,9 @@ impl CmpOp {
 
 /// A constraint operation is any comparison operator OR an assignment.
 #[derive(strum_macros::Display, Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+#[cfg_attr(feature = "cffi", repr(C))]
 pub enum ConstraintOp {
     #[strum(to_string = "=")]
     Assign,
@@ -458,6 +481,7 @@ impl Predicate {
 /// Enum for different expression kinds
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+#[cfg_attr(feature = "cffi", repr(C))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum AbcExpression {
     /// A binary operator, e.g., x + y
@@ -695,6 +719,7 @@ impl std::fmt::Display for AbcExpression {
 /// Provides an interface to define a type in the constraint system.
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+#[cfg_attr(feature = "cffi", repr(C))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum AbcType {
     // A user defined compound type.
@@ -750,6 +775,7 @@ impl std::fmt::Display for AbcType {
 /// Note that for Sint, Uint, and Float, the width is in **bytes**.
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+#[cfg_attr(feature = "cffi", repr(C))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AbcScalar {
     /// Signed integer type. The width is in bytes.
@@ -953,6 +979,7 @@ impl From<std::num::NonZeroI16> for Literal {
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(Clone, Debug, strum_macros::Display, PartialEq)]
+#[cfg_attr(feature = "cffi", repr(C))]
 pub enum Term {
     #[strum(to_string = "{0}")]
     Expr(Handle<AbcExpression>),
@@ -1040,7 +1067,7 @@ impl From<bool> for Term {
 }
 
 // Blanket implementation for converting anything that can be converted to a
-//literal into a term.
+// literal into a term.
 impl<T: Into<Literal>> From<T> for Term {
     fn from(val: T) -> Self {
         Term::Literal(val.into())

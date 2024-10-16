@@ -5,3 +5,10 @@ version = 1
 path = ["src/**/*.rs", "Cargo.toml", "Cargo.lock", ".pre-commit-config.yaml", "REUSE.toml", "*.yaml"]
 SPDX-FileCopyrightText = "2024 University of Rochester"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+
+# rust-toolchain.toml has no copyright, and is licensed under CC0-1.0
+[[annotations]]
+path = "rust-toolchain.toml"
+SPDX-License-Identifier = "CC0-1.0"
+SPDX-FileCopyrightText = "None"
