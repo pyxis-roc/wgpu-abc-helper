@@ -52,6 +52,11 @@ use lazy_static::lazy_static;
 #[cfg(feature = "cffi")]
 pub mod cffi;
 
+#[doc(hidden)]
+mod macros;
+#[doc(hidden)]
+use macros::cbindgen_annotate;
+
 /// Objects that derive this trait mean they support replacing terms within them with other terms.
 trait SubstituteTerm {
     /// This should always return a clone of `to` if `self.is_identical(from)` is true.
@@ -152,7 +157,9 @@ pub enum BinaryOp {
     Shr,
 }
 
-/// A comparison operator used by predicates.
+cbindgen_annotate! {
+"derive-const-casts"
+#[doc = "A comparison operator used by predicates."]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
@@ -171,20 +178,7 @@ pub enum CmpOp {
     #[strum(to_string = ">=")]
     Geq,
 }
-
-// impl Display for CmpOp {
-//     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-//         match self {
-//             CmpOp::Eq => write!(f, "=="),
-//             CmpOp::Neq => write!(f, "!="),
-//             CmpOp::Lt => write!(f, "<"),
-//             CmpOp::Gt => write!(f, ">"),
-//             CmpOp::Leq => write!(f, "<="),
-//             CmpOp::Geq => write!(f, ">="),
-//         }
-//     }
-// }
-
+}
 impl CmpOp {
     /// Construct a new comparison operator that represents
     /// the opposite of the operator.
@@ -719,7 +713,6 @@ impl std::fmt::Display for AbcExpression {
 /// Provides an interface to define a type in the constraint system.
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[cfg_attr(feature = "cffi", repr(C))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum AbcType {
     // A user defined compound type.
@@ -776,6 +769,7 @@ impl std::fmt::Display for AbcType {
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
+#[cfg_attr(not(doc), doc = r"cbindgen:derive-eq")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AbcScalar {
     /// Signed integer type. The width is in bytes.
