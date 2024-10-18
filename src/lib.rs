@@ -769,7 +769,6 @@ impl std::fmt::Display for AbcType {
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
-#[cfg_attr(not(doc), doc = r"cbindgen:derive-eq")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AbcScalar {
     /// Signed integer type. The width is in bytes.

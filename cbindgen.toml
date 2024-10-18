@@ -32,10 +32,12 @@ derive_const_casts = true
 
 [export.pre_body]
 "FfiTerm" = """
-  Term() = delete;
+  auto get_id() {
+    return this->id;
+  }
 private:
+
 """
 "FfiAbcType" = """
-  AbcType() = delete;
 private:
 """

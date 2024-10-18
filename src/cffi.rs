@@ -20,13 +20,13 @@ use crate::AbcScalar;
 #[repr(C)]
 pub enum MaybeTerm {
     Error(ErrorCode),
-    Term(FfiTerm),
+    Success(FfiTerm),
 }
 
 impl From<Result<FfiTerm, ErrorCode>> for MaybeTerm {
     fn from(r: Result<FfiTerm, ErrorCode>) -> Self {
         match r {
-            Ok(t) => MaybeTerm::Term(t),
+            Ok(t) => MaybeTerm::Success(t),
             Err(e) => MaybeTerm::Error(e),
         }
     }
@@ -36,12 +36,12 @@ impl From<Result<FfiTerm, ErrorCode>> for MaybeTerm {
 #[repr(C)]
 pub enum MaybeAbcType {
     Error(ErrorCode),
-    AbcType(FfiAbcType),
+    Success(FfiAbcType),
 }
 impl From<Result<FfiAbcType, ErrorCode>> for MaybeAbcType {
     fn from(r: Result<FfiAbcType, ErrorCode>) -> Self {
         match r {
-            Ok(t) => MaybeAbcType::AbcType(t),
+            Ok(t) => MaybeAbcType::Success(t),
             Err(e) => MaybeAbcType::Error(e),
         }
     }
@@ -79,14 +79,14 @@ pub enum ErrorCode {
 }
 
 impl<'a> super::CmpOp {
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn negate(&self) -> Self {
         self.negation()
     }
 }
 
 impl super::CmpOp {
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn as_ConstraintOp(self) -> super::ConstraintOp {
         self.into()
     }
@@ -94,7 +94,7 @@ impl super::CmpOp {
 
 impl super::ConstraintOp {
     /// Conversion method to convert a ConstraintOp to a CmpOp
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn from_CmpOp(value: super::CmpOp) -> Self {
         value.into()
     }
@@ -133,7 +133,7 @@ impl FfiTerm {
         }
     }
 
-    pub extern "C" fn delete(&self) -> ErrorCode {
+    pub extern "C" fn free(&self) -> ErrorCode {
         let r = self.id;
         let mut terms = Terms.write().unwrap();
         terms[r] = None;
@@ -164,7 +164,7 @@ Implementation of predicate constructors for term
 */
 impl FfiTerm {
     /// Create a new unit predicate
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn new_unit_pred(p: Self) -> MaybeTerm {
         let p: Result<Term, ErrorCode> = p.try_into();
         match p {
@@ -173,19 +173,19 @@ impl FfiTerm {
         }
     }
     /// Create a Term holding the `true` predicate
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn new_literal_true() -> MaybeTerm {
         Self::new(Term::new_literal_true()).into()
     }
 
     /// Create a Term holding the `false` predicate
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn new_literal_false() -> MaybeTerm {
         Self::new(Term::new_literal_false()).into()
     }
 
     /// Creates lhs && rhs
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn new_logical_and(lhs: Self, rhs: Self) -> MaybeTerm {
         let lhs: Result<Term, ErrorCode> = lhs.try_into();
         let rhs: Result<Term, ErrorCode> = rhs.try_into();
@@ -199,7 +199,7 @@ impl FfiTerm {
     ///
     /// Returns a `MaybeTerm`, which is either a `Term` if the term was successfully created,
     /// or `BadTerm` if the provided terms were not valid.
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn new_logical_or(lhs: Self, rhs: Self) -> MaybeTerm {
         let lhs: Result<Term, ErrorCode> = lhs.try_into();
         let rhs: Result<Term, ErrorCode> = rhs.try_into();
@@ -210,7 +210,7 @@ impl FfiTerm {
     }
 
     /// Constructs lhs `op` rhs
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn new_comparison(op: super::CmpOp, lhs: Self, rhs: Self) -> MaybeTerm {
         let lhs: Result<Term, ErrorCode> = lhs.try_into();
         let rhs: Result<Term, ErrorCode> = rhs.try_into();
@@ -225,7 +225,7 @@ impl FfiTerm {
     /// If `t` is already a [`Predicate::Not`], then it removes the `!`
     ///
     /// [`Predicate::Not`]: crate::Predicate::Not
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn new_not(t: Self) -> MaybeTerm {
         let t: Result<Term, ErrorCode> = t.try_into();
         match t {
@@ -240,8 +240,8 @@ impl FfiTerm {
     ///
     /// If the term is invalid, <BadTerm> is returned.
     /// Note: The returned c_string MUST be freed by the caller, by calling `free_string` or this will lead to a memory leak.
-    #[no_mangle]
-    pub extern "C" fn to_c_str(self) -> *const c_char {
+    #[unsafe(no_mangle)]
+    pub extern "C" fn term_to_cstr(self) -> *mut c_char {
         let term: Result<Term, ErrorCode> = self.try_into();
         // Unsafe guarantees here:
         // 1. We have checked that the term is valid.
@@ -262,7 +262,7 @@ impl FfiTerm {
 }
 
 #[allow(unused_must_use)] // We are only dropping the string, so we don't care about the result.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn free_string(s: *mut c_char) {
     unsafe {
         CString::from_raw(s);
@@ -311,8 +311,8 @@ impl FfiAbcType {
     ///
     ///
     /// That is, calling `delete` will just remove the type from the library's collection.
-    #[no_mangle]
-    pub extern "C" fn delete(&self) -> ErrorCode {
+    #[unsafe(no_mangle)]
+    pub extern "C" fn free(&self) -> ErrorCode {
         let r = self.id;
         // functional style! :D
         Types.write().map_or_else(
@@ -335,7 +335,7 @@ impl FfiAbcType {
 
 /* */
 impl FfiAbcType {
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn new_Scalar(scalar: AbcScalar) -> MaybeAbcType {
         Self::new(AbcType::Scalar(scalar)).into()
     }
@@ -348,7 +348,7 @@ impl FfiAbcType {
     /// # Safety
     /// The caller must ensure that the `fields` and `types` pointers are valid, and that the `len` parameter
     /// is correct.
-    // #[no_mangle]
+    // #[unsafe(no_mangle)]
     // pub extern "C" fn new_Struct(
     //     fields: *const FfiStr,
     //     types: *const FfiAbcType,
