@@ -11,13 +11,13 @@
 int main()
 {
     // Make a new term that is literal True
-    abc_helper::MaybeTerm term = abc_helper::new_literal_true();
+    abc_helper::MaybeTerm term = abc_helper::abc_new_literal_true();
     if (term.tag == abc_helper::MaybeTerm::Tag::Success)
     {
         auto term_inner = term.success._0;
-        auto term_text = term_to_cstr(term_inner);
+        auto term_text = abc_helper::abc_term_to_cstr(term_inner);
         std::cout << "Term text: " << term_text << std::endl;
-        abc_helper::free_string(term_text);
+        abc_helper::abc_free_string(term_text);
     }
     else
     {

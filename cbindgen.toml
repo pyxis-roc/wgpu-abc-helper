@@ -19,8 +19,8 @@ usize_is_size_t = true
 [export]
 # FfiStr and CString are just a wrappers around const char*
 # FfiTerm and FfiAbcType should be renamed to Term and AbcType, as they are just FFI interfaces to these types.
-rename = { "FfiStr" = "const char*", "CString" = "const char*", "FfiTerm" = "Term", "FfiAbcType" = "AbcType" }
-renaming_overrides_prefixing = true
+rename = { "FfiStr" = "const char*", "CString" = "const char*"}
+# renaming_overrides_prefixing = true
 
 [parse.expand]
 crates = ["abc-helper"]
@@ -36,8 +36,17 @@ derive_const_casts = true
     return this->id;
   }
 private:
-
 """
 "FfiAbcType" = """
+  auto get_id() {
+    return this->id;
+  }
+private:
+"""
+
+"FFISummary" = """
+  auto get_id() {
+    return this->id;
+  }
 private:
 """

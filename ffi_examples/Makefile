@@ -6,7 +6,7 @@
 
 CXX = g++
 CXXFLAGS = -I../target/release/include
-LDFLAGS = -L../target/release -labc_helper -Wl,-rpath,../target/release
+LDFLAGS = -L../target/release -labc_helper -Wl,-rpath,$(realpath ../target/release)
 
 BUILD_DIR ?= build
 
