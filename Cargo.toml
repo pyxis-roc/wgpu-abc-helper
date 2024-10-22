@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 [package]
 name = "abc-helper"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "An array bounds checking solver for wgsl compilers"
@@ -39,9 +39,16 @@ rstest = "0.22.0"
 
 
 [package.metadata.clippy]
-allow = ["clippy::must_use_candidate"]
+allow = ["clippy::must_use_candidate",]
+
 
 
 [lints.rust]
 # Add rust_analyzer as a valid cfg lint.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rust_analyzer)'] } 
+
+
+# We turn on clippy::pedantic
+[lints.clippy]
+pedantic = {level = "warn"}
+must_use_candidate = {level = "allow", priority = 1}

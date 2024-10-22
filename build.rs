@@ -28,7 +28,7 @@ fn main() {
             Ok(bindings) => bindings.write_to_file(output_file),
             // During development..
             Err(cbindgen::Error::ParseSyntaxError { .. }) => return, // ignore in favor of cargo's syntax check
-            Err(err) => panic!("{:?}", err),
+            Err(err) => panic!("{err:?}"),
         };
     }
 }

@@ -68,14 +68,15 @@ trait SubstituteTerm {
     fn substitute_multi(&self, mapping: &[(&Term, &Term)]) -> Self;
 }
 
-// For right now, we are using handles. Later on, we might switch to an arena with actual handles.
+// For right now, we are using handles that are just Arcs. Later on, we might switch to an arena with actual handles.
+// We also might switch to using Rc instead of Arc.
 
 pub type Handle<T> = Arc<T>;
 
 mod helper;
 pub use helper::*;
 
-/// An opaque marker that is provided when specifying expressions to relate them, when necessary.
+/// An opaque marker that may be provided when adding constraints to track the constraint.
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct OpaqueMarker<T>
@@ -219,7 +220,7 @@ impl From<CmpOp> for ConstraintOp {
 /// They establish relationships between terms that limit their domain.
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Constraint {
     /// An assignment constraint, e.g. x = y
     Assign {
@@ -309,7 +310,7 @@ impl std::fmt::Display for Constraint {
 
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(strum_macros::Display, Debug, Clone, PartialEq)]
+#[derive(strum_macros::Display, Debug, Clone, Eq)]
 pub enum Predicate {
     // Conjunction of two predicates, e.g. x && y
     #[strum(to_string = "({0}) && ({1})")]
@@ -334,6 +335,48 @@ pub enum Predicate {
     /// The literal True predicate.
     #[strum(to_string = "true")]
     True,
+}
+
+impl std::hash::Hash for Predicate {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Predicate::And(lhs, rhs) | Predicate::Or(lhs, rhs) => {
+                lhs.hash(state);
+                rhs.hash(state);
+            }
+            Predicate::Not(p) => p.hash(state),
+            Predicate::Comparison(op, l, r) => {
+                op.hash(state);
+                l.hash(state);
+                r.hash(state);
+            }
+            Predicate::Unit(t) => t.hash(state),
+
+            Predicate::False | Predicate::True => {
+                // These have no data to hash
+            }
+        }
+    }
+}
+
+impl PartialEq for Predicate {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Predicate::False, Predicate::False) | (Predicate::True, Predicate::True) => true,
+            (Predicate::And(ref lhs, ref rhs), Predicate::And(ref lhs2, ref rhs2))
+            | (Predicate::Or(ref lhs, ref rhs), Predicate::Or(ref lhs2, ref rhs2)) => {
+                Arc::ptr_eq(lhs, lhs2) && Arc::ptr_eq(rhs, rhs2)
+            }
+            (Predicate::Not(ref p), Predicate::Not(ref p2)) => Arc::ptr_eq(p, p2),
+            (
+                Predicate::Comparison(op, ref l, ref r),
+                Predicate::Comparison(op2, ref l2, ref r2),
+            ) => op == op2 && l.is_identical(l2) && r.is_identical(r2),
+            (Predicate::Unit(ref t), Predicate::Unit(ref t2)) => t.is_identical(t2),
+            _ => false,
+        }
+    }
 }
 
 impl From<&bool> for Term {
@@ -476,7 +519,7 @@ impl Predicate {
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AbcExpression {
     /// A binary operator, e.g., x + y
     BinaryOp(BinaryOp, Term, Term),
@@ -534,6 +577,68 @@ pub enum AbcExpression {
         ty: Handle<AbcType>,
         value: Term,
     },
+}
+
+impl std::hash::Hash for AbcExpression {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            AbcExpression::BinaryOp(op, l, r) => {
+                op.hash(state);
+                l.hash(state);
+                r.hash(state);
+            }
+            AbcExpression::Select(t1, t2, t3) => {
+                t1.hash(state);
+                t2.hash(state);
+                t3.hash(state);
+            }
+            AbcExpression::Splat(t, v) => {
+                t.hash(state);
+                v.hash(state);
+            }
+            AbcExpression::ArrayLength(t) => t.hash(state),
+            AbcExpression::Call { func, args } => {
+                Arc::as_ptr(func).hash(state);
+                args.hash(state);
+            }
+            AbcExpression::Cast(t, s) => {
+                t.hash(state);
+                s.hash(state);
+            }
+            AbcExpression::FieldAccess {
+                base,
+                ty,
+                fieldname,
+            } => {
+                base.hash(state);
+                Arc::as_ptr(ty).hash(state);
+                fieldname.hash(state);
+            }
+            AbcExpression::IndexAccess { base, index } => {
+                base.hash(state);
+                index.hash(state);
+            }
+            AbcExpression::Store { base, index, value } => {
+                base.hash(state);
+                index.hash(state);
+                value.hash(state);
+            }
+            AbcExpression::StructStore {
+                base,
+                fieldname,
+                ty,
+                value,
+            } => {
+                base.hash(state);
+                fieldname.hash(state);
+                Arc::as_ptr(ty).hash(state);
+                value.hash(state);
+            }
+
+            AbcExpression::Empty => {}
+        }
+    }
 }
 
 //
@@ -701,19 +806,10 @@ impl std::fmt::Display for AbcExpression {
     }
 }
 
-// pub struct PredicateBlock {
-//     /// The predicate that guards this block
-//     guard: Handle<Predicate>,
-//     /// The statements in this block.
-//     statements: Vec<String>,
-// }
-
-// Design: We have a helper class. This helper class holds the variables.
-
 /// Provides an interface to define a type in the constraint system.
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AbcType {
     // A user defined compound type.
     Struct {
@@ -725,12 +821,10 @@ pub enum AbcType {
         ty: Handle<AbcType>,
         size: std::num::NonZeroU32,
     },
-    // An array with an unknown size.
-    // what is an array with an override size?
-    DynamicArray {
-        ty: Handle<AbcType>,
-    },
-    Scalar(AbcScalar), // Vector { ty: Handle<AbcType>, size: u32 }, // Just means we can swizzle...
+    /// An array with an unknown size.
+    DynamicArray { ty: Handle<AbcType> },
+    /// A builtin scalar type.
+    Scalar(AbcScalar),
 
     /// A value that doesn't exist
     ///
@@ -804,7 +898,7 @@ impl std::fmt::Display for AbcScalar {
 /// For right now, we are just storing the name and the nargs...
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Summary {
     pub name: String,
     pub args: Vec<Term>,
@@ -852,22 +946,20 @@ impl Summary {
     }
 
     /// Add an argument to the summary.
-    pub(crate) fn add_argument(&mut self, arg: Term) {
-        self.args.push(arg);
+    pub(crate) fn add_argument(&mut self, arg: &Term) {
+        self.args.push(arg.clone());
     }
 
     /// Add a constraint to the summary.
-    pub fn add_constraint(&mut self, constraint: Constraint) {
-        self.constraints.push(constraint);
+    pub fn add_constraint(&mut self, constraint: &Constraint) {
+        self.constraints.push(constraint.clone());
     }
 
     /// Add an assumption to the summary.
-    pub fn add_assumption(&mut self, assumption: Constraint) {
-        self.assumptions.push(assumption);
+    pub fn add_assumption(&mut self, assumption: &Constraint) {
+        self.assumptions.push(assumption.clone());
     }
 }
-
-// Ret is a special Arc that is guaranteed to hold a predicate
 
 lazy_static! {
     static ref RET: Term = Term::Var(Arc::new(Var {
@@ -882,7 +974,7 @@ lazy_static! {
 ///
 /// [`Predicate::True`]: crate::Predicate::True
 /// [`Predicate::False`]: crate::Predicate::False
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, strum_macros::Display)]
+#[derive(Debug, Clone, Copy, PartialOrd, strum_macros::Display)]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -904,6 +996,38 @@ pub enum Literal {
     AbstractInt(i64),
     #[strum(to_string = "{0}")]
     AbstractFloat(f64),
+}
+
+impl PartialEq for Literal {
+    /// Equality comparisons for floating point types use their bit representation.
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::F64(a), Self::F64(b)) | (Self::AbstractFloat(a), Self::AbstractFloat(b)) => {
+                a.to_bits() == b.to_bits()
+            }
+            (Self::F32(a), Self::F32(b)) => a.to_bits() == b.to_bits(),
+            (Self::U32(a), Self::U32(b)) => a == b,
+            (Self::I32(a), Self::I32(b)) => a == b,
+            (Self::U64(a), Self::U64(b)) => a == b,
+            (Self::I64(a), Self::I64(b)) | (Self::AbstractInt(a), Self::AbstractInt(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+impl Eq for Literal {}
+
+impl std::hash::Hash for Literal {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::F64(v) | Self::AbstractFloat(v) => v.to_bits().hash(state),
+            Self::F32(v) => v.to_bits().hash(state),
+            Self::U32(v) => v.hash(state),
+            Self::I32(v) => v.hash(state),
+            Self::U64(v) => v.hash(state),
+            Self::I64(v) | Self::AbstractInt(v) => v.hash(state),
+        }
+    }
 }
 
 macro_rules! from_lit_impl {
@@ -971,7 +1095,7 @@ impl From<std::num::NonZeroI16> for Literal {
 /// It also simplifies the logic for storing references to variables.
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Clone, Debug, strum_macros::Display, PartialEq)]
+#[derive(Clone, Debug, strum_macros::Display)]
 #[cfg_attr(feature = "cffi", repr(C))]
 pub enum Term {
     #[strum(to_string = "{0}")]
@@ -984,6 +1108,32 @@ pub enum Term {
     Predicate(Handle<Predicate>),
     /// An empty term or predicate.
     Empty,
+}
+
+impl PartialEq for Term {
+    fn eq(&self, other: &Self) -> bool {
+        self.is_identical(other)
+    }
+}
+impl Eq for Term {}
+
+impl std::hash::Hash for Term {
+    /// The hash of a term hashes its discriminant and then its contents.
+    ///
+    /// Enum fields that are Arcs hash the pointer itself, not the data it contains.
+    /// Thus, the hash of a `Term` is not guaranteed to be the same
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::Expr(e) => Arc::as_ptr(e).hash(state),
+            Self::Var(v) => Arc::as_ptr(v).hash(state),
+            Self::Literal(l) => l.hash(state),
+            Self::Predicate(p) => Arc::as_ptr(p).hash(state),
+            Self::Empty => {
+                // Do nothing...
+            }
+        }
+    }
 }
 
 impl Term {

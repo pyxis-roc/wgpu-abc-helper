@@ -507,9 +507,18 @@ impl FfiTerm {
     }
 }
 
+/// Free a string that was allocated by the library.
+///
+/// # Safety
+/// The caller must ensure that the pointer passed is a valid pointer to a string allocated by the library.
+/// Currently, these are only strings that are returned by [`abc_term_to_cstr`].
+#[cfg_attr(
+    any(doc, rust_analyzer),
+    doc = "\n[`abc_term_to_cstr`]: crate::FfiTerm::abc_term_to_cstr"
+)]
 #[allow(unused_must_use)] // We are only dropping the string, so we don't care about the result.
 #[unsafe(no_mangle)]
-pub extern "C" fn abc_free_string(s: *mut c_char) {
+pub unsafe extern "C" fn abc_free_string(s: *mut c_char) {
     unsafe {
         CString::from_raw(s);
     }
@@ -541,7 +550,7 @@ impl FfiAbcType {
         }
     }
 
-    /// Remove the AbcType from the library's collection of types. This
+    /// Remove `self` from the library's collection of types. This
     /// can be used to free the type when it is no longer needed.
     ///
     /// After calling this method, the type should not be used.
@@ -588,7 +597,7 @@ impl FfiAbcType {
         Self::new(AbcType::Scalar(scalar)).into()
     }
 
-    /// Create a new struct type. Takes a list of fields, each of which is a tuple of a string and an AbcType.
+    /// Create a new struct type. Takes a list of fields, each of which is a tuple of a string and an `AbcType`.
     ///
     /// `len` specifies how many fields are passed. It MUST be at least as long as the number of fields and types
     /// passed.
@@ -623,7 +632,7 @@ impl FfiAbcType {
         // If len is 0, then we don't even have to check against null pointers. Just return an empty struct.
         if len == 0 {
             return Self::new(AbcType::Struct {
-                members: Default::default(),
+                members: FastHashMap::default(),
             })
             .into();
         }
@@ -652,9 +661,8 @@ impl FfiAbcType {
 
         // Iterate over the fields
         for (pos, ty) in types_slice.iter().enumerate() {
-            let matched_ty = match ty_map.get(ty.id) {
-                Some(Some(ty)) => ty,
-                _ => return MaybeAbcType::Error(ErrorCode::BadTerm),
+            let Some(Some(matched_ty)) = ty_map.get(ty.id) else {
+                return MaybeAbcType::Error(ErrorCode::BadTerm);
             };
             let field_name = String::from(match fields_slice[pos].as_opt_str() {
                 Some(s) => s,
@@ -670,7 +678,7 @@ impl FfiAbcType {
         .into()
     }
 
-    /// Declare a new SizedArray type. `size` is the number of elements in the array. This cannot be 0.
+    /// Declare a new `SizedArray` type. `size` is the number of elements in the array. This cannot be 0.
     ///
     /// # Errors
     /// - [`ErrorCode::NotFound`] is returned if the type passed does not exist in the library's collection.

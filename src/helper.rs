@@ -25,8 +25,8 @@ pub enum ConstraintError {
     PredicateStackEmpty,
     #[error("Active summary is not set")]
     SummaryError,
-    #[error("Return type already set")]
-    DuplicateReturnType,
+    #[error("Attempt to declare the type of a Term a second time.")]
+    DuplicateType,
     #[error("This is not yet implemented")]
     NotImplemented(String),
     #[error("Attempt to end a loop when no loop is active")]
@@ -62,14 +62,11 @@ pub trait ConstraintInterface {
     /// Get the handle for the `NoneType`
     fn none_type(&self) -> Self::Handle<AbcType>;
 
-    /// Add an expression into the constraint system.
-    fn add_expression(&mut self, expr: AbcExpression) -> Result<Term, Self::E>;
-
     /// Add an argument to the function summary
     ///
     /// Name is the name of the argument.
     /// Returns a var handle.
-    fn add_argument(&mut self, name: String, ty: Self::Handle<AbcType>) -> Result<Term, Self::E>;
+    fn add_argument(&mut self, name: String, ty: &Self::Handle<AbcType>) -> Result<Term, Self::E>;
 
     /// Makes a call expression.
     ///
@@ -84,27 +81,24 @@ pub trait ConstraintInterface {
     /// The implementation should return an error if the function called does not reside in the arena.
     fn make_call(
         &mut self,
-        func: Self::Handle<Summary>,
+        func: &Self::Handle<Summary>,
         args: Vec<Term>,
-        into: Option<Term>,
+        into: Option<&Term>,
     ) -> Result<Term, Self::E>;
 
     /// Add a new constraint to the constraint system. Any active predicates are applied to the constraint to "filter" the domain of its expression.
     ///
     /// Note: These will need to be desugared.
-    ///
-    /// # Errors
-    ///
-    fn add_constraint(&mut self, lhs: Term, op: ConstraintOp, rhs: Term) -> Result<(), Self::E>;
+    fn add_constraint(&mut self, lhs: &Term, op: ConstraintOp, rhs: &Term) -> Result<(), Self::E>;
 
     fn declare_type(&mut self, ty: AbcType) -> Result<Self::Handle<AbcType>, Self::E>;
 
     /// Add a new constraint to the constraint system, marked by `source`
     fn add_tracked_constraint<T: std::fmt::Debug + Clone>(
         &mut self,
-        lhs: Term,
+        lhs: &Term,
         op: ConstraintOp,
-        rhs: Term,
+        rhs: &Term,
         source: OpaqueMarker<T>,
     ) -> Result<(), Self::E>;
 
@@ -116,17 +110,17 @@ pub trait ConstraintInterface {
     /// Mark the type of a variable.
     /// If the type is an array, this will also mark the number of dimensions.
     /// If the type is an array with a fixed size, this will also mark the size of the array.
-    fn mark_type(&mut self, term: Term, ty: self::Handle<AbcType>) -> Result<(), Self::E>;
+    fn mark_type(&mut self, term: &Term, ty: &self::Handle<AbcType>) -> Result<(), Self::E>;
 
     /// Mark the length of a variable. The type of the variable must be a dynamic array.
-    fn mark_length(&mut self, var: Term, dim: u8, size: u64) -> Result<(), Self::E>;
+    fn mark_length(&mut self, var: &Term, dim: u8, size: u64) -> Result<(), Self::E>;
 
     /// Mark an assumption.
     ///
     /// These are constraints that must be met.
     ///
     /// That is, these are constraints that are not inverted when proving the satisfiability of the system.
-    fn add_assumption(&mut self, lhs: Term, op: ConstraintOp, rhs: Term) -> Result<(), Self::E>;
+    fn add_assumption(&mut self, lhs: &Term, op: ConstraintOp, rhs: &Term) -> Result<(), Self::E>;
 
     /// Begin a predicate block. This indicates to the solver
     /// that all expressions that follow can be filtered by the predicate.
@@ -138,7 +132,7 @@ pub trait ConstraintInterface {
     /// mark all constraints as ``p1 && p2 -> c``
     /// That is, when determining if the constraint is violated, the solver
     /// will essentially check p -> c.
-    fn begin_predicate_block(&mut self, p: Term) -> Result<(), Self::E>;
+    fn begin_predicate_block(&mut self, p: &Term) -> Result<(), Self::E>;
 
     /// End the active predicate block.
     ///
@@ -183,10 +177,10 @@ pub trait ConstraintInterface {
     ///
     fn mark_return(&mut self, retval: Option<Term>) -> Result<(), Self::E>;
 
-    fn mark_return_type(&mut self, ty: Self::Handle<AbcType>) -> Result<(), Self::E>;
+    fn mark_return_type(&mut self, ty: &Self::Handle<AbcType>) -> Result<(), Self::E>;
 
     /// Mark the beginning of a loop.
-    fn begin_loop(&mut self, condition: Term) -> Result<(), Self::E>;
+    fn begin_loop(&mut self, condition: &Term) -> Result<(), Self::E>;
 
     /// Mark the end of a loop.
     fn end_loop(&mut self) -> Result<(), Self::E>;
@@ -200,20 +194,15 @@ pub trait ConstraintInterface {
     /// Mark a variable that is used as a loop counter
     fn mark_loop_variable(
         &mut self,
-        var: Term,  // The variable that is incremented
-        init: Term, // What it is initialized to.
+        var: &Term,  // The variable that is incremented
+        init: &Term, // What it is initialized to.
         // What this term is compared to
 
         // How the term is incremented
-        inc_term: Term,
+        inc_term: &Term,
 
         inc_op: BinaryOp,
     ) -> Result<(), Self::E>;
-
-    /// Mark the range of a term.
-    fn mark_range<T>(&mut self, var: Term, low: T, high: T) -> Result<(), Self::E>
-    where
-        T: ToString;
 
     // Marks a call to a function.
 }
@@ -232,6 +221,9 @@ pub struct ConstraintModule {
     pub(crate) global_constraints: Vec<Constraint>,
     /// Summaries contain the set of summaries that have previously been parsed.
     pub(crate) summaries: Vec<Handle<Summary>>,
+
+    /// A map from variables that have been declared to their type.
+    pub(crate) global_type_map: FastHashMap<Term, Handle<AbcType>>,
 }
 
 impl ConstraintModule {
@@ -323,6 +315,33 @@ pub struct ConstraintHelper {
 }
 
 impl ConstraintHelper {
+    /// Helper method used to denote the type of the term as having the same type as `other`.
+    /// If `other` does not have a type, then this method does nothing.
+    ///
+    /// # Errors
+    /// [`TypeMismatch`] if `term` already has a type and it is different from `other`'s type.
+    ///
+    /// [`TypeMismatch`]: crate::ConstraintError::TypeMismatch
+    pub(crate) fn mark_type_as_other(
+        &mut self,
+        term: &Term,
+        other: &Term,
+    ) -> Result<(), ConstraintError> {
+        // Get whatever type `other` is in the global type map.
+        let ty = match self.module.global_type_map.get(other) {
+            Some(ty) => ty.clone(),
+            None => return Ok(()),
+        };
+        match self.module.global_type_map.entry(term.clone()) {
+            std::collections::hash_map::Entry::Occupied(entry) if entry.get() == &ty => Ok(()),
+            std::collections::hash_map::Entry::Occupied(_) => Err(ConstraintError::DuplicateType),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(ty.clone());
+                Ok(())
+            }
+        }
+    }
+
     /// Access the inner constraint module.
     ///
     /// Meant only to be used for serialization.
@@ -393,6 +412,7 @@ impl ConstraintHelper {
         }
     }
 
+    /// Mark an action taken by the constraint system...
     fn write(&mut self, s: String) {
         self.statements.push(s);
     }
@@ -407,9 +427,9 @@ impl ConstraintHelper {
         }
     }
 
-    #[allow(unused)]
     /// Mark the length of a dimension
     /// Not sure if this is even needed, honestly.
+    #[allow(unused)]
     pub(crate) fn mark_ndim(&mut self, term: &Term, ndim: u8) {
         self.write(format!("ndim({term}) = {ndim}"));
     }
@@ -434,6 +454,7 @@ impl ConstraintHelper {
             .reduce(Predicate::new_and)
     }
 
+    /// Join the loop predicate stack together, returning a predicate which is the conjunction of all predicates in the stack.
     fn join_loop_predicate_stack(&self) -> Option<Handle<Predicate>> {
         self.loop_predicate_stack
             .iter()
@@ -443,36 +464,38 @@ impl ConstraintHelper {
 
     /// Creates a [`Constraint`] for use as an assumption or requirement.
     ///
+    /// # Errors
+    /// [`EmptyExpression`] if `rhs` is an empty expression `op` is not `ConstraintOp::Unary`.
+    ///
+    /// [`EmptyExpression`]: crate::ConstraintError::EmptyExpression
     /// [`Constraint`]: crate::Constraint
     fn build_constraint(
         &mut self,
-        term: Term,
+        term: &Term,
         op: ConstraintOp,
-        rhs: Term,
+        rhs: &Term,
     ) -> Result<Constraint, ConstraintError> {
         let guard = self.make_guard();
         match op {
-            ConstraintOp::Unary => Ok(Constraint::Expression { guard, term }),
+            ConstraintOp::Unary => Ok(Constraint::Expression {
+                guard,
+                term: term.clone(),
+            }),
             // An empty rhs is not allowed unless this is a unary constraint.
             _ if matches!(rhs, Term::Expr(ref e) if matches!(e.as_ref(), AbcExpression::Empty)) => {
                 Err(ConstraintError::EmptyExpression)
             }
             ConstraintOp::Assign => Ok(Constraint::Assign {
-                lhs: term,
-                rhs,
+                lhs: term.clone(),
+                rhs: rhs.clone(),
                 guard,
             }),
             ConstraintOp::Cmp(op) => Ok(Constraint::Cmp {
                 guard,
-                lhs: term,
+                lhs: term.clone(),
                 op,
-                rhs,
+                rhs: rhs.clone(),
             }),
-            // Allow sus to add constraints in the future without having to implement them.
-            #[allow(unreachable_patterns)]
-            _ => Err(ConstraintError::NotImplemented(format!(
-                "ConstraintOp::{op:?}"
-            ))),
         }
     }
 }
@@ -507,11 +530,11 @@ impl ConstraintInterface for ConstraintHelper {
     // We can then mark anything that uses this induction variable..
     fn mark_loop_variable(
         &mut self,
-        var: Term, // The variable that is incremented
+        var: &Term, // The variable that is incremented
         // What it is initialized to.
-        init: Term,
+        init: &Term,
         // How the term is incremented
-        inc_term: Term,
+        inc_term: &Term,
 
         inc_op: BinaryOp,
     ) -> Result<(), Self::E> {
@@ -551,9 +574,9 @@ impl ConstraintInterface for ConstraintHelper {
     /// If `into` is `None`, then a new term is created for the return value (for proper ssa handling)
     fn make_call(
         &mut self,
-        func: Self::Handle<Summary>,
+        func: &Self::Handle<Summary>,
         args: Vec<Term>,
-        into: Option<Term>,
+        into: Option<&Term>,
     ) -> Result<Term, Self::E> {
         // We have to add the constraints from the summary.
         // For now, we don't do this, but we will have to on the desugaring pass.
@@ -572,7 +595,7 @@ impl ConstraintInterface for ConstraintHelper {
 
         // Replace references to the ret term with this new term...
         let ret_term = if let Some(t) = into {
-            t
+            t.clone()
         } else {
             let new_ret = self.fresh_ret_var(Some(&func.name));
             self.declare_var(new_ret)?
@@ -580,7 +603,7 @@ impl ConstraintInterface for ConstraintHelper {
 
         // We don't do replacements on an empty term...
         if func.ret_term.is_empty() {
-            self.mark_type(ret_term.clone(), NONETYPE.clone())?;
+            self.mark_type(&ret_term, &NONETYPE)?;
         } else {
             term_vec.push((&func.ret_term, &ret_term));
         }
@@ -609,43 +632,36 @@ impl ConstraintInterface for ConstraintHelper {
         Ok(ret_term)
     }
 
-    fn add_argument(&mut self, name: String, ty: Self::Handle<AbcType>) -> Result<Term, Self::E> {
+    fn add_argument(&mut self, name: String, ty: &Self::Handle<AbcType>) -> Result<Term, Self::E> {
         let mut argname = String::with_capacity(name.len() + 1);
         argname.push('@');
         argname.push_str(&name);
         let var = self.declare_var(Var { name: argname })?;
-        self.mark_type(var.clone(), ty)?;
+        self.mark_type(&var, ty)?;
         match self.active_summary {
             Some(ref mut summary) => {
-                summary.add_argument(var.clone());
+                summary.add_argument(&var);
                 Ok(var)
             }
             None => Err(ConstraintError::SummaryError),
         }
     }
 
-    /// Add an expression to the constraint system, returning a handle to it.
-    ///
-    /// # Errors
-    /// Never (always returns an Ok)
-    fn add_expression(&mut self, expr: AbcExpression) -> Result<Term, Self::E> {
-        Ok(Term::Expr(expr.into()))
-    }
-
     /// Create a new variable, returning a `Term` that wraps it.
     fn declare_var(&mut self, name: Var) -> Result<Term, ConstraintError> {
+        // We need to track this variable...
         Ok(Term::Var(name.into()))
     }
 
-    /// Mark a break statement
+    /// Mark a break statement. (Currently unimplemented)
     ///
     /// # Errors
-    /// Errors if there is no active loop context.
+    /// `ConstraintError::NotImplemented`
     fn mark_break(&mut self) -> Result<(), Self::E> {
         Err(ConstraintError::NotImplemented("break".to_string()))
     }
 
-    /// Mark a continue statement
+    /// Mark a continue statement. (Currently unimplemented)
     ///
     /// # Errors
     /// Errors if there is no active loop context.
@@ -653,40 +669,51 @@ impl ConstraintInterface for ConstraintHelper {
         Err(ConstraintError::NotImplemented("continue".to_string()))
     }
 
-    /// Mark the type of the provided term
-    fn mark_type(&mut self, term: Term, ty: Self::Handle<AbcType>) -> Result<(), Self::E> {
-        // If we are already given a handle, then we just use that
-        // Otherwise, if we are given a string, then we create a new var.
-
-        // if let Some(arc_var) = Arc::downcast::<Var>(var)
+    /// Mark the type of the provided term.
+    ///
+    /// # Errors
+    /// [`DuplicateType`] if the type of the term has already been marked.
+    ///
+    /// [`DuplicateType`]: crate::ConstraintError::DuplicateType
+    fn mark_type(&mut self, term: &Term, ty: &Self::Handle<AbcType>) -> Result<(), Self::E> {
+        use std::collections::hash_map::Entry;
         self.write(format!("type({term}) = {ty}"));
-        Ok(())
+        match self.module.global_type_map.entry(term.clone()) {
+            Entry::Occupied(entry) if entry.get() == ty => Ok(()),
+            Entry::Occupied(_) => Err(ConstraintError::DuplicateType),
+            Entry::Vacant(entry) => {
+                entry.insert(ty.clone());
+                Ok(())
+            }
+        }
     }
 
     /// Mark the return type for the active summary.
-    /// Can only be called once per active summary.
     ///
     /// # Errors
-    /// [`ConstraintError::SummaryError`] if there is no active summary, or if
-    /// the summary has already had its return type marked.
-    fn mark_return_type(&mut self, ty: Self::Handle<AbcType>) -> Result<(), Self::E> {
+    /// - [`SummaryError`] if there is no active summary
+    /// - [`DuplicateType`] if the return type has already been marked for the summary
+    ///
+    /// [`SummaryError`]: crate::ConstraintError::SummaryError
+    /// [`DuplicateType`]: crate::ConstraintError::DuplicateType
+    fn mark_return_type(&mut self, ty: &Self::Handle<AbcType>) -> Result<(), Self::E> {
         self.write(format!("type(@ret) = {ty}"));
         match self.active_summary {
             None => Err(ConstraintError::SummaryError),
             Some(ref mut summary) if matches!(summary.return_type.as_ref(), AbcType::NoneType) => {
-                summary.return_type = ty;
+                summary.return_type = ty.clone();
                 Ok(())
             }
-            _ => Err(ConstraintError::DuplicateReturnType),
+            _ => Err(ConstraintError::DuplicateType),
         }
     }
 
     /// Add a constraint that is tracked by the provided source.
     fn add_tracked_constraint<T: std::fmt::Debug + Clone>(
         &mut self,
-        term: Term,
+        term: &Term,
         op: ConstraintOp,
-        rhs: Term,
+        rhs: &Term,
         source: OpaqueMarker<T>,
     ) -> Result<(), Self::E> {
         // self.write(format!("/* {:?} */", source));
@@ -699,7 +726,10 @@ impl ConstraintInterface for ConstraintHelper {
     /// Add a constraint to the system that narrows the domain of `term`
     ///
     /// Any active predicates are applied.
-    fn add_constraint(&mut self, term: Term, op: ConstraintOp, rhs: Term) -> Result<(), Self::E> {
+    ///
+    /// # Errors
+    /// Never.
+    fn add_constraint(&mut self, term: &Term, op: ConstraintOp, rhs: &Term) -> Result<(), Self::E> {
         // build the predicate. To start with, we have the permanent predicate
         // Then, we have the AND of the current predicate stack.
         let new_constraint = self.build_constraint(term, op, rhs)?;
@@ -709,8 +739,19 @@ impl ConstraintInterface for ConstraintHelper {
             Some(ref mut summary) => &mut summary.constraints,
             None => &mut self.module.global_constraints,
         }
-        .push(new_constraint);
-        Ok(())
+        .push(new_constraint.clone());
+        // If this is an equality constraint, then try to mark the type of the term.
+        if let Constraint::Assign {
+            ref lhs, ref rhs, ..
+        } = new_constraint
+        {
+            match self.mark_type_as_other(lhs, rhs) {
+                Ok(()) | Err(ConstraintError::DuplicateType) => Ok(()),
+                e => e,
+            }
+        } else {
+            Ok(())
+        }
     }
 
     /// When we encounter a return, push the current predicate on the current stack, if there is a current predicate stack...
@@ -719,8 +760,8 @@ impl ConstraintInterface for ConstraintHelper {
             return Err(ConstraintError::SummaryError);
         }
         // Add the constraint on retval, if there is a retval.
-        if let Some(expr) = retval {
-            self.add_constraint(RET.clone(), ConstraintOp::Assign, expr)?;
+        if let Some(ref expr) = retval {
+            self.add_constraint(&RET, ConstraintOp::Assign, expr)?;
         }
         // It is likely an error if the return predicate already exists and is not None,
         // But just in case, we will make the return predicate the `or` of the current predicate stack...
@@ -747,12 +788,13 @@ impl ConstraintInterface for ConstraintHelper {
     /// to test for satisfiability.
     ///
     /// # Errors
+    ///
     /// Errors if the assumption is not well formed or supported by the system.
-    fn add_assumption(&mut self, lhs: Term, op: ConstraintOp, rhs: Term) -> Result<(), Self::E> {
+    fn add_assumption(&mut self, lhs: &Term, op: ConstraintOp, rhs: &Term) -> Result<(), Self::E> {
         let constraint = self.build_constraint(lhs, op, rhs)?;
         self.write(format!("assume({constraint})"));
         if let Some(ref mut s) = self.active_summary {
-            s.add_assumption(constraint);
+            s.add_assumption(&constraint);
         } else {
             self.module.global_assumptions.push(constraint);
         }
@@ -762,29 +804,16 @@ impl ConstraintInterface for ConstraintHelper {
     /// Mark the length of an array's dimension.
     ///
     /// Used for arrays with a fixed size.
-    fn mark_length(&mut self, var: Term, dim: u8, size: u64) -> Result<(), ConstraintError> {
+    fn mark_length(&mut self, var: &Term, dim: u8, size: u64) -> Result<(), ConstraintError> {
         self.write(format!("length({var}, {dim}) = {size}"));
         Ok(())
     }
 
-    /// Mark the range of a variable. This works as an assumption when the range of a variable is fixed.
-    fn mark_range<T>(&mut self, var: Term, low: T, high: T) -> Result<(), ConstraintError>
-    where
-        T: ToString,
-    {
-        self.write(format!(
-            "range({var}) \\in {{{}, {}}}",
-            low.to_string(),
-            high.to_string()
-        ));
-        Ok(())
-    }
-
     /// Push a predicate block onto the stack
-    fn begin_predicate_block(&mut self, p: Term) -> Result<(), ConstraintError> {
+    fn begin_predicate_block(&mut self, p: &Term) -> Result<(), ConstraintError> {
         // In this form, every subsequent constraint we add is guarded by the conjunction of each predicate...
         let pred: Self::Handle<Predicate> = match p {
-            Term::Predicate(p) => p,
+            Term::Predicate(p) => p.clone(),
             _ => Predicate::new_unit(p),
         };
         log_info!("Beginning predicate block: {}", pred.as_ref());
@@ -824,19 +853,19 @@ impl ConstraintInterface for ConstraintHelper {
     /// It also allows for special handling of break and continue statements.
     /// HOWEVER, for the time being, we can't do any of this fancy handling
     /// So we are just going to emit a "`begin_loop(condition)`" statement, and will assume this is a part of the constraint system.
-    fn begin_loop(&mut self, condition: Term) -> Result<(), ConstraintError> {
+    fn begin_loop(&mut self, condition: &Term) -> Result<(), ConstraintError> {
         // In begin_loop, we add a new predicate block corresponding to the loop predicate.
         // Here, we need to begin a new loop predicate block.
         match condition {
             Term::Predicate(p) => {
-                self.loop_predicate_stack.push(p);
+                self.loop_predicate_stack.push(p.clone());
             }
-            Term::Var(v) => {
+            t @ Term::Var(_) => {
                 self.loop_predicate_stack
-                    .push(Predicate::new_unit(Term::Var(v)));
+                    .push(Predicate::new_unit(t.clone()));
             }
             _ => {
-                return Err(ConstraintError::UnsupportedLoopCondition(condition));
+                return Err(ConstraintError::UnsupportedLoopCondition(condition.clone()));
             }
         }
 
@@ -957,7 +986,7 @@ pub(crate) mod test {
         let ty = constraint_helper
             .declare_type(AbcType::Scalar(AbcScalar::Sint(4)))
             .unwrap();
-        assert!(constraint_helper.mark_type(var, ty).is_ok());
+        assert!(constraint_helper.mark_type(&var, &ty).is_ok());
         check_constraint_output(&constraint_helper, "type(x) = i32");
     }
 
@@ -978,13 +1007,13 @@ pub(crate) mod test {
             .declare_type(AbcType::Scalar(AbcScalar::Uint(4)))
             .unwrap();
         let arg = constraint_helper
-            .add_argument("test_arg_1".to_string(), my_ty)
+            .add_argument("test_arg_1".to_string(), &my_ty)
             .unwrap();
         constraint_helper
             .add_assumption(
-                arg,
+                &arg,
                 ConstraintOp::Cmp(crate::CmpOp::Eq),
-                Term::new_literal(4u32),
+                &Term::new_literal(4u32),
             )
             .unwrap();
 
@@ -1003,13 +1032,15 @@ pub(crate) mod test {
 
         let args = vec![my_x.clone()];
         // Now, push a call.
-        constraint_helper.make_call(old_method, args, None).unwrap();
+        constraint_helper
+            .make_call(&old_method, args, None)
+            .unwrap();
 
         let expected_constraint = constraint_helper
             .build_constraint(
-                my_x.clone(),
+                &my_x,
                 ConstraintOp::Cmp(crate::CmpOp::Eq),
-                Term::new_literal(4u32),
+                &Term::new_literal(4u32),
             )
             .unwrap();
 
