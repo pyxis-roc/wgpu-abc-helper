@@ -52,3 +52,4 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rust_analyzer)'] }
 [lints.clippy]
 pedantic = {level = "warn"}
 must_use_candidate = {level = "allow", priority = 1}
+default_trait_access = {level = "allow", priority = 1}

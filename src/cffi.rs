@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2024 University of Rochester
 //
 // SPDX-License-Identifier: MIT
-#![allow(non_snake_case)]
+#![allow(
+    non_snake_case, // We use camelCase for constructors of enum variants.
+    clippy::default_trait_access // Default::default() is just so much nicer.
+)]
 
 use super::{AbcType, Term};
 use ffi_support::FfiStr;
@@ -41,7 +44,7 @@ impl From<Result<FfiTerm, ErrorCode>> for MaybeTerm {
     }
 }
 
-/// Represents a possible AbcType, or an error code.
+/// Represents a possible `AbcType`, or an error code.
 #[repr(C)]
 pub enum MaybeAbcType {
     Error(ErrorCode),
@@ -56,9 +59,10 @@ impl From<Result<FfiAbcType, ErrorCode>> for MaybeAbcType {
     }
 }
 
-/// FfiSummary are not created by the user. They are returned only by the library by the `endSummary()`
+/// `FfiSummary` are not created by the user. They are returned only by the library by the `endSummary()`
 /// method of the helper. NOTE: The alpha version of this library's cffi module does not include the helper.
 #[repr(transparent)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub struct FfiSummary {
     id: usize,
 }
@@ -175,7 +179,8 @@ pub enum ErrorCode {
     WrongType = 9,
 }
 
-impl<'a> super::CmpOp {
+impl super::CmpOp {
+    #[must_use]
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_negate(&self) -> Self {
         self.negation()
@@ -190,19 +195,19 @@ impl super::CmpOp {
 }
 
 impl super::ConstraintOp {
-    /// Conversion method to convert a ConstraintOp to a CmpOp
+    /// Conversion method to convert a `ConstraintOp` to a `CmpOp`
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_from_CmpOp(value: super::CmpOp) -> Self {
         value.into()
     }
 }
 
-#[repr(transparent)]
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Hash)]
 /// For ffi bindings, term does not contain the actual term data, but instead a handle to it.
 ///
 /// This handle corresponds to an index in the `Terms` vector, a static global variable in this library.
 /// This is because `Term` has members that are not FFI-Safe.
+#[repr(transparent)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Hash)]
 pub struct FfiTerm {
     id: usize,
 }
@@ -211,7 +216,7 @@ impl FfiTerm {
     /// Like `new`, except the caller passes in the term map. Used when the caller already has a lock on the terms.
     ///
     /// # Errors
-    /// If the lock on the ReusableTermId
+    /// If the lock on the `ReusableTermId`
     fn new_with_terms(new_term: Term, term_map: &mut Vec<Option<Term>>) -> Result<Self, ErrorCode> {
         if let Some(id) = ReusableTermIds
             .lock()
@@ -244,7 +249,10 @@ impl FfiTerm {
     /// `ErrorCode::PoisonedLock` if the lock on the global terms map is poisoned.
     pub extern "C" fn abc_free_term(&self) -> ErrorCode {
         let r = self.id;
-        let mut terms = Terms.write().unwrap();
+        let terms = Terms.write().map_err(|_| ErrorCode::PoisonedLock);
+        let Ok(mut terms) = terms else {
+            return ErrorCode::PoisonedLock;
+        };
         terms[r] = None;
         match ReusableTermIds.lock() {
             Ok(mut ids) => {
@@ -350,6 +358,7 @@ impl FfiTerm {
     /// # Errors
     /// - [`ErrorCode::NullPointer`] is returned if the string passed is null.
     /// - [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[allow(clippy::needless_pass_by_value)] // We do want to pass by value here, actually.
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_new_var(s: FfiStr) -> MaybeTerm {
         match s.as_opt_str() {
@@ -415,7 +424,7 @@ impl FfiTerm {
     /// # Safety
     /// N.B.: This function *will* check that `args` is non null and properly aligned, but cannot ensure
     /// that the the pointer is valid for `nargs` elements. As such, it is the responsibility of the caller
-    /// to ensure that the pointer contains at least `nargs` FfiTerm elements.
+    /// to ensure that the pointer contains at least `nargs` elements.
     /// Otherwise, behavior is undefined.
     ///
     /// # Returns
@@ -424,7 +433,7 @@ impl FfiTerm {
     /// # Errors
     /// - [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms or Summaries is poisoned.
     /// - [`ErrorCode::NotFound`] is returned if `func` or any of the terms in `args` do not exist in
-    /// the library's collection.
+    ///     the library's collection.
     /// - [`ErrorCode::NullPointer`] is returned if `nargs` is nonzero and `args` is a null pointer
     /// - [`ErrorCode::Alignmenterror`] is returned if `nargs` is nonzero and `args` is not properly aligned.
     #[cfg_attr(
@@ -443,9 +452,8 @@ impl FfiTerm {
         nargs: usize,
     ) -> MaybeTerm {
         // Get the summary
-        let f = match Summaries.read().map(|s| s.get(func.id).cloned()) {
-            Ok(Some(Some(f))) => f,
-            _ => return MaybeTerm::Error(ErrorCode::NotFound),
+        let Ok(Some(Some(f))) = Summaries.read().map(|s| s.get(func.id).cloned()) else {
+            return MaybeTerm::Error(ErrorCode::NotFound);
         };
         // Mutable reference to term map so that we can write to it.
         let term_map = &mut *match Terms.write() {
@@ -485,7 +493,7 @@ impl FfiTerm {
     /// Get the string representation of the term.
     ///
     /// If the term is invalid, <BadTerm> is returned.
-    /// Note: The returned c_string MUST be freed by the caller, by calling `free_string` or this will lead to a memory leak.
+    /// Note: The returned `c_string` MUST be freed by the caller, by calling `free_string` or this will lead to a memory leak.
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_term_to_cstr(self) -> *mut c_char {
         let term: Result<Term, ErrorCode> = self.try_into();
@@ -647,9 +655,8 @@ impl FfiAbcType {
         }
 
         // Get a read lock on the types.
-        let ty_map = match Types.write() {
-            Ok(ty_map) => ty_map,
-            Err(_) => return MaybeAbcType::Error(ErrorCode::PoisonedLock),
+        let Ok(ty_map) = Types.write() else {
+            return MaybeAbcType::Error(ErrorCode::PoisonedLock);
         };
 
         // The pointers have been checked for null and alignment, so we can safely create slices from them.
@@ -697,9 +704,8 @@ impl FfiAbcType {
             return MaybeAbcType::Error(ErrorCode::ForbiddenZero);
         };
 
-        let ty_map = match Types.write() {
-            Ok(ty_map) => ty_map,
-            Err(_) => return MaybeAbcType::Error(ErrorCode::PoisonedLock),
+        let Ok(ty_map) = Types.write() else {
+            return MaybeAbcType::Error(ErrorCode::PoisonedLock);
         };
 
         match ty_map.get(ty.id) {
@@ -727,9 +733,8 @@ impl FfiAbcType {
     )]
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_new_DynamicArray(ty: FfiAbcType) -> MaybeAbcType {
-        let ty_map = match Types.write() {
-            Ok(ty_map) => ty_map,
-            Err(_) => return MaybeAbcType::Error(ErrorCode::PoisonedLock),
+        let Ok(ty_map) = Types.write() else {
+            return MaybeAbcType::Error(ErrorCode::PoisonedLock);
         };
 
         match ty_map.get(ty.id) {
