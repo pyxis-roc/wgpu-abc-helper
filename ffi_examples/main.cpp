@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 #include <iostream>
+#include <stdlib.h>
 
-#include "wgpu_constraints.hpp"
+#include "wgpu_abc_helper.hpp"
 // using namespace wgpu_constraints;
 // extern void hello_ffi(int32_t a, int32_t b);
 
@@ -26,5 +27,5 @@ int main()
 
     // Print the term.
 
-    return 0;
+    return EXIT_SUCCESS;
 }
