@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2024 University of Rochester
+#
+# SPDX-License-Identifier: MIT
+name: CFFI CI
+
+on:
+    push:
+        branches:
+            - main
+        paths:
+            - "src/**"
+            - "Cargo.toml"
+            - "Cargo.lock"
+            - ".github/workflows/cffi.yml"
+    workflow_dispatch:
+    pull_request:
+        branches:
+            - main
+        paths:
+            - "src/**"
+            - "Cargo.toml"
+            - "Cargo.lock"
+            - ".github/workflows/cffi.yml"
+jobs:
+    build-and-test:
+        runs-on: ${{ matrix.os }}
+        strategy:
+            matrix:
+                os: [ubuntu-latest, macos-latest, windows-latest]
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@stable
+            - name: Make
+              if: runner.os == 'Windows'
+              run: choco install make
+            - name: Build
+              run: cargo build --all-features --release
+            - name: Test
+              run: make && build/test.out
+              working-directory: ffi_examples
