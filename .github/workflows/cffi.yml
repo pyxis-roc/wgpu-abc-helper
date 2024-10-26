@@ -30,11 +30,18 @@ jobs:
         steps:
             - uses: actions/checkout@v4
             - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2
             - name: Make
               if: runner.os == 'Windows'
               run: choco install make
             - name: Build
               run: cargo build --all-features --release
-            - name: Test
-              run: make && build/test.out
+            - name: Make Example
+              run: make
               working-directory: ffi_examples
+            - name: Run Example (Linux)
+              run: ./test.out
+              working-directory: ffi_examples/build
+            - name: Run Example (Windows)
+              run: test.out
+              working-directory: ffi_examples/build
