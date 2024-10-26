@@ -48,4 +48,4 @@ jobs:
               working-directory: ffi_examples
             - name: Run Example
               run: ${{ matrix.run-command }}
-              working-directory: ffi_examples
+              working-directory: ffi_examples/build
