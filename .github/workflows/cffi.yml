@@ -27,6 +27,13 @@ jobs:
         strategy:
             matrix:
                 os: [ubuntu-latest, macos-latest, windows-latest]
+                include:
+                    - os: ubuntu-latest
+                      run-command: ./test.out
+                    - os: macos-latest
+                      run-command: ./test.out
+                    - os: windows-latest
+                      run-command: test.out
         steps:
             - uses: actions/checkout@v4
             - uses: dtolnay/rust-toolchain@stable
@@ -36,12 +43,9 @@ jobs:
               run: choco install make
             - name: Build
               run: cargo build --all-features --release
-            - name: Make Example
+            - name: Make FFI test
               run: make
               working-directory: ffi_examples
-            - name: Run Example (Linux)
-              run: ./test.out
-              working-directory: ffi_examples/build
-            - name: Run Example (Windows)
-              run: test.out
-              working-directory: ffi_examples/build
+            - name: Run Example
+              run: ${{ matrix.run-command }}
+              working-directory: ffi_examples
