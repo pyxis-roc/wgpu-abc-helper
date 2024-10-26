@@ -33,7 +33,7 @@ jobs:
                     - os: macos-latest
                       run-command: ./test.out
                     - os: windows-latest
-                      run-command: test.out
+                      run-command: .\test.out
         steps:
             - uses: actions/checkout@v4
             - uses: dtolnay/rust-toolchain@stable
