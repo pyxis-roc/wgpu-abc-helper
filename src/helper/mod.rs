@@ -122,7 +122,7 @@ mod visitor {
                 }
                 E::Matrix { ref components, .. } | E::Vector { ref components, .. } => {
                     for component in components {
-                        self.visit_and_merge(component)
+                        self.visit_and_merge(component);
                     }
                 }
             }

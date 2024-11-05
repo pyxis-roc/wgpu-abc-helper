@@ -741,7 +741,7 @@ impl std::fmt::Display for AbcExpression {
                 } else {
                     f.write_str("")?;
                     f.write_str(&components.first().unwrap().to_string())?;
-                    for term in components.get(1..).unwrap_or_default().iter() {
+                    for term in components.get(1..).unwrap_or_default() {
                         f.write_str(", ")?;
                         f.write_str(&term.to_string())?;
                     }
@@ -1410,13 +1410,13 @@ impl Term {
 
     #[must_use]
     pub fn new_vector(terms: &[Term], ty: AbcScalar) -> Self {
-        let components = terms.iter().cloned().collect();
+        let components = terms.to_vec();
         AbcExpression::Vector { components, ty }.into()
     }
 
     #[must_use]
     pub fn new_matrix(terms: &[Term], ty: AbcScalar) -> Self {
-        let components = terms.iter().cloned().collect();
+        let components = terms.to_vec();
         AbcExpression::Matrix { components, ty }.into()
     }
 
