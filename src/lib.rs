@@ -679,7 +679,7 @@ impl SubstituteTerm for AbcExpression {
         expression_sub! {self, substitute, (from, to)}
     }
     fn substitute_multi(&self, mapping: &[(&Term, &Term)]) -> Self {
-        if mapping.is_empty() {
+        if mapping.len() == 1 {
             return self.substitute(mapping[0].0, mapping[0].1);
         }
         expression_sub! {self, substitute_multi, (mapping)}
