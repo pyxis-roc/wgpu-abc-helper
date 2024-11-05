@@ -15,7 +15,7 @@ use lazy_static::lazy_static;
 
 #[allow(unused_imports)]
 use crate::cbindgen_annotate;
-use crate::{AbcScalar, FastHashMap};
+use crate::{AbcScalar, StructField};
 
 /// Represents a possible term, or an error code.
 ///
@@ -285,7 +285,7 @@ impl FfiTerm {
     pub extern "C" fn abc_new_unit_pred(p: Self) -> MaybeTerm {
         let p: Result<Term, ErrorCode> = p.try_into();
         match p {
-            Ok(t) => Self::new(Term::new_unit_pred(t)).into(),
+            Ok(t) => Self::new(Term::new_unit_pred(&t)).into(),
             _ => MaybeTerm::Error(ErrorCode::BadTerm),
         }
     }
@@ -307,7 +307,7 @@ impl FfiTerm {
         let lhs: Result<Term, ErrorCode> = lhs.try_into();
         let rhs: Result<Term, ErrorCode> = rhs.try_into();
         match (lhs, rhs) {
-            (Ok(lhs), Ok(rhs)) => Self::new(Term::new_logical_and(lhs, rhs)).into(),
+            (Ok(lhs), Ok(rhs)) => Self::new(Term::new_logical_and(&lhs, &rhs)).into(),
             _ => MaybeTerm::Error(ErrorCode::BadTerm),
         }
     }
@@ -321,7 +321,7 @@ impl FfiTerm {
         let lhs: Result<Term, ErrorCode> = lhs.try_into();
         let rhs: Result<Term, ErrorCode> = rhs.try_into();
         match (lhs, rhs) {
-            (Ok(lhs), Ok(rhs)) => Self::new(Term::new_logical_or(lhs, rhs)).into(),
+            (Ok(lhs), Ok(rhs)) => Self::new(Term::new_logical_or(&lhs, &rhs)).into(),
             _ => MaybeTerm::Error(ErrorCode::BadTerm),
         }
     }
@@ -332,7 +332,7 @@ impl FfiTerm {
         let lhs: Result<Term, ErrorCode> = lhs.try_into();
         let rhs: Result<Term, ErrorCode> = rhs.try_into();
         match (lhs, rhs) {
-            (Ok(lhs), Ok(rhs)) => Self::new(Term::new_comparison(op, lhs, rhs)).into(),
+            (Ok(lhs), Ok(rhs)) => Self::new(Term::new_comparison(op, &lhs, &rhs)).into(),
             _ => MaybeTerm::Error(ErrorCode::BadTerm),
         }
     }
@@ -346,7 +346,7 @@ impl FfiTerm {
     pub extern "C" fn abc_new_not(t: Self) -> MaybeTerm {
         let t: Result<Term, ErrorCode> = t.try_into();
         match t {
-            Ok(t) => Self::new(Term::new_not(t)).into(),
+            Ok(t) => Self::new(Term::new_not(&t)).into(),
             Err(e) => MaybeTerm::Error(e),
         }
     }
@@ -411,81 +411,6 @@ impl FfiTerm {
                 Self::new_with_terms(Term::new_cast(term, scalar), term_map).into()
             },
         )
-    }
-
-    /// Create a new `Call` term.
-    /// A `Call` corresponds to a function call.
-    ///
-    /// # Arguments
-    /// - `func`: The function to call. This is a `FfiSummary` which is a handle to a summary.
-    /// - `args`: A pointer to an array of `FfiTerm`s, which are the arguments to the function. Ignored if `nargs` is 0.
-    /// - `nargs`: The number of arguments in the `args` array.
-    ///
-    /// # Safety
-    /// N.B.: This function *will* check that `args` is non null and properly aligned, but cannot ensure
-    /// that the the pointer is valid for `nargs` elements. As such, it is the responsibility of the caller
-    /// to ensure that the pointer contains at least `nargs` elements.
-    /// Otherwise, behavior is undefined.
-    ///
-    /// # Returns
-    /// On success, returns a [`MaybeTerm::Success`] containing the new `Call` term.  
-    /// On error, returns a [`MaybeTerm::Error`] containing the error code.
-    /// # Errors
-    /// - [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms or Summaries is poisoned.
-    /// - [`ErrorCode::NotFound`] is returned if `func` or any of the terms in `args` do not exist in
-    ///     the library's collection.
-    /// - [`ErrorCode::NullPointer`] is returned if `nargs` is nonzero and `args` is a null pointer
-    /// - [`ErrorCode::Alignmenterror`] is returned if `nargs` is nonzero and `args` is not properly aligned.
-    #[cfg_attr(
-        any(doc, rust_analyzer),
-        doc = "\n[`ErrorCode::PoisonedLock`]: crate::ErrorCode::PoisonedLock\n\
-                [`ErrorCode::NotFound`]: crate::ErrorCode::NotFound\n\
-                [`ErrorCode::NullPointer`]: crate::ErrorCode::NullPointer\n\
-                [`ErrorCode::Alignmenterror`]: crate::ErrorCode::Alignmenterror\n\
-                [`MaybeTerm::Success`]: crate::MaybeTerm::Success\n\
-                [`MaybeTerm::Error`]: crate::MaybeTerm::Error"
-    )]
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn abc_new_call(
-        func: FfiSummary,
-        args: *const FfiTerm,
-        nargs: usize,
-    ) -> MaybeTerm {
-        // Get the summary
-        let Ok(Some(Some(f))) = Summaries.read().map(|s| s.get(func.id).cloned()) else {
-            return MaybeTerm::Error(ErrorCode::NotFound);
-        };
-        // Mutable reference to term map so that we can write to it.
-        let term_map = &mut *match Terms.write() {
-            Ok(t) => t,
-            Err(_) => return MaybeTerm::Error(ErrorCode::PoisonedLock),
-        };
-
-        let mut call_args: Vec<Term> = Vec::with_capacity(nargs);
-        if nargs > 0 {
-            // Safety checks. We can only check that `args` is not null and properly aligned.
-            if args.is_null() {
-                return MaybeTerm::Error(ErrorCode::NullPointer);
-            }
-            if !args.is_aligned() {
-                return MaybeTerm::Error(ErrorCode::Alignmenterror);
-            }
-
-            let args = unsafe { std::slice::from_raw_parts(args, nargs) };
-
-            for arg in args {
-                match term_map.get(arg.id) {
-                    Some(Some(t)) => call_args.push(t.clone()),
-                    _ => return MaybeTerm::Error(ErrorCode::NotFound),
-                }
-            }
-        }
-
-        // Create the new term, and then add it into term_map.
-        let new_term = Term::new_call(f.clone(), call_args);
-        Self::new_with_terms(new_term, term_map).into()
-
-        // Okay, now we
     }
 }
 
@@ -640,7 +565,7 @@ impl FfiAbcType {
         // If len is 0, then we don't even have to check against null pointers. Just return an empty struct.
         if len == 0 {
             return Self::new(AbcType::Struct {
-                members: FastHashMap::default(),
+                members: Vec::new(),
             })
             .into();
         }
@@ -664,7 +589,7 @@ impl FfiAbcType {
         let types_slice = std::slice::from_raw_parts(types, len);
 
         // Make the new fields hashmap.
-        let mut new_fields = FastHashMap::with_capacity_and_hasher(len, Default::default());
+        let mut new_fields = Vec::with_capacity(len);
 
         // Iterate over the fields
         for (pos, ty) in types_slice.iter().enumerate() {
@@ -675,7 +600,10 @@ impl FfiAbcType {
                 Some(s) => s,
                 None => return MaybeAbcType::Error(ErrorCode::NullPointer),
             });
-            new_fields.insert(field_name, matched_ty.clone());
+            new_fields.push(StructField {
+                name: field_name,
+                ty: matched_ty.clone(),
+            });
         }
 
         // Create the struct type.

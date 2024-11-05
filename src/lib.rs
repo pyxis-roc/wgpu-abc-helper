@@ -46,6 +46,7 @@ provides a few mechanisms to handle loops.
 use std::{fmt::Write, sync::Arc};
 
 type FastHashMap<K, V> = rustc_hash::FxHashMap<K, V>;
+type FastHashSet<K> = rustc_hash::FxHashSet<K>;
 
 use lazy_static::lazy_static;
 
@@ -74,9 +75,11 @@ trait SubstituteTerm {
 pub type Handle<T> = Arc<T>;
 
 mod helper;
+#[allow(unused_imports)] // This is a re epxort
 pub use helper::*;
 
 /// An opaque marker that may be provided when adding constraints to track the constraint.
+/// The `OpaqueMarker` must be trivially serializable and deserializeable, regardless of the feature flags.
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct OpaqueMarker<T>
@@ -120,7 +123,9 @@ impl std::fmt::Display for Var {
 }
 
 /// A unary operation. Currently only supports unary minus.
-#[derive(strum_macros::Display, Debug, Clone, Copy)]
+#[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
 pub enum UnaryOp {
     #[strum(to_string = "-")]
@@ -133,49 +138,95 @@ pub enum UnaryOp {
 #[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
     #[strum(to_string = "+")]
+    #[cfg_attr(
+        any(feature = "serialize", feature = "deserialize"),
+        serde(rename = "+")
+    )]
     Plus,
     #[strum(to_string = "-")]
+    #[cfg_attr(
+        any(feature = "serialize", feature = "deserialize"),
+        serde(rename = "-")
+    )]
     Minus,
     #[strum(to_string = "*")]
+    #[cfg_attr(
+        any(feature = "serialize", feature = "deserialize"),
+        serde(rename = "*")
+    )]
     Times,
     #[strum(to_string = "%")]
+    #[cfg_attr(
+        any(feature = "serialize", feature = "deserialize"),
+        serde(rename = "%")
+    )]
     Mod,
     #[strum(to_string = "//")]
+    #[cfg_attr(
+        any(feature = "serialize", feature = "deserialize"),
+        serde(rename = "//")
+    )]
     Div,
 
     // The following are probably not supported by our constraint system.
     #[strum(to_string = "&")]
+    #[cfg_attr(
+        any(feature = "serialize", feature = "deserialize"),
+        serde(rename = "&")
+    )]
     BitAnd,
     #[strum(to_string = "|")]
+    #[cfg_attr(
+        any(feature = "serialize", feature = "deserialize"),
+        serde(rename = "|")
+    )]
     BitOr,
     #[strum(to_string = "^")]
+    #[cfg_attr(
+        any(feature = "serialize", feature = "deserialize"),
+        serde(rename = "^")
+    )]
     BitXor,
 
     // These can probably be supported if the lhs or rhs is a constant.
     #[strum(to_string = "<<")]
+    #[cfg_attr(
+        any(feature = "serialize", feature = "deserialize"),
+        serde(rename = "<<")
+    )]
     Shl,
     #[strum(to_string = ">>")]
+    #[cfg_attr(
+        any(feature = "serialize", feature = "deserialize"),
+        serde(rename = ">>")
+    )]
     Shr,
 }
 
 cbindgen_annotate! {
 "derive-const-casts"
-#[doc = "A comparison operator used by predicates."]
+#[doc = "A comparison operator used by ccates."]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
 #[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CmpOp {
     #[strum(to_string = "==")]
+    #[cfg_attr(any(feature = "serialize", feature = "deserialize"), serde(rename = "=="))]
     Eq = 0,
+    #[cfg_attr(any(feature = "serialize", feature = "deserialize"), serde(rename = "!="))]
     #[strum(to_string = "!=")]
     Neq,
     #[strum(to_string = "<")]
+    #[cfg_attr(any(feature = "serialize", feature = "deserialize"), serde(rename = "<"))]
     Lt,
     #[strum(to_string = ">")]
+    #[cfg_attr(any(feature = "serialize", feature = "deserialize"), serde(rename = ">"))]
     Gt,
     #[strum(to_string = "<=")]
+    #[cfg_attr(any(feature = "serialize", feature = "deserialize"), serde(rename = "<="))]
     Leq,
+    #[cfg_attr(any(feature = "serialize", feature = "deserialize"), serde(rename = ">="))]
     #[strum(to_string = ">=")]
     Geq,
 }
@@ -198,16 +249,14 @@ impl CmpOp {
 
 /// A constraint operation is any comparison operator OR an assignment.
 #[derive(strum_macros::Display, Debug, Clone, Copy, Eq, PartialEq, Hash)]
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
 pub enum ConstraintOp {
-    #[strum(to_string = "=")]
+    #[strum(to_string = ":=")]
     Assign,
-    #[strum(to_string = "{0}")]
-    Cmp(CmpOp),
     #[strum(to_string = "UnaryConstraint")]
     Unary,
+    #[strum(to_string = "{0}")]
+    Cmp(CmpOp),
 }
 
 impl From<CmpOp> for ConstraintOp {
@@ -220,7 +269,11 @@ impl From<CmpOp> for ConstraintOp {
 /// They establish relationships between terms that limit their domain.
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    any(feature = "serialize", feature = "deserialize"),
+    serde(tag = "kind")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Constraint {
     /// An assignment constraint, e.g. x = y
     Assign {
@@ -237,8 +290,12 @@ pub enum Constraint {
         rhs: Term,
     },
 
-    /// An expression constraint, e.g. x (In this case, the expression must be a predicate term.)
-    Expression {
+    /// An identity constraint, e.g. `x`.  In this case, `Term` _must_ be a predicate variant.
+    #[cfg_attr(
+        any(feature = "serialize", feature = "deserialize"),
+        serde(rename = "identity")
+    )]
+    Identity {
         guard: Option<Handle<Predicate>>,
         term: Term,
     },
@@ -259,7 +316,7 @@ macro_rules! constraint_sub {
                 op: *op,
                 rhs: rhs.$name($($args),*),
             },
-            Self::Expression { guard, term } => Self::Expression {
+            Self::Identity { guard, term } => Self::Identity {
                 guard: guard.as_ref().map(|f| f.$name($($args),*).into()),
                 term: term.$name($($args),*),
             },
@@ -289,7 +346,7 @@ impl Constraint {
         match self {
             Constraint::Assign { guard, .. }
             | Constraint::Cmp { guard, .. }
-            | Constraint::Expression { guard, .. } => guard.clone(),
+            | Constraint::Identity { guard, .. } => guard.clone(),
         }
     }
 }
@@ -303,14 +360,14 @@ impl std::fmt::Display for Constraint {
         match self {
             Constraint::Assign { lhs, rhs, .. } => write!(f, "{lhs} = {rhs}"),
             Constraint::Cmp { lhs, op, rhs, .. } => write!(f, "{lhs} {op} {rhs}"),
-            Constraint::Expression { term, .. } => write!(f, "{term}"),
+            Constraint::Identity { term, .. } => write!(f, "{term}"),
         }
     }
 }
 
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(strum_macros::Display, Debug, Clone, Eq)]
+#[derive(strum_macros::Display, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Predicate {
     // Conjunction of two predicates, e.g. x && y
     #[strum(to_string = "({0}) && ({1})")]
@@ -337,71 +394,9 @@ pub enum Predicate {
     True,
 }
 
-impl std::hash::Hash for Predicate {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self).hash(state);
-        match self {
-            Predicate::And(lhs, rhs) | Predicate::Or(lhs, rhs) => {
-                lhs.hash(state);
-                rhs.hash(state);
-            }
-            Predicate::Not(p) => p.hash(state),
-            Predicate::Comparison(op, l, r) => {
-                op.hash(state);
-                l.hash(state);
-                r.hash(state);
-            }
-            Predicate::Unit(t) => t.hash(state),
-
-            Predicate::False | Predicate::True => {
-                // These have no data to hash
-            }
-        }
-    }
-}
-
-impl PartialEq for Predicate {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Predicate::False, Predicate::False) | (Predicate::True, Predicate::True) => true,
-            (Predicate::And(ref lhs, ref rhs), Predicate::And(ref lhs2, ref rhs2))
-            | (Predicate::Or(ref lhs, ref rhs), Predicate::Or(ref lhs2, ref rhs2)) => {
-                Arc::ptr_eq(lhs, lhs2) && Arc::ptr_eq(rhs, rhs2)
-            }
-            (Predicate::Not(ref p), Predicate::Not(ref p2)) => Arc::ptr_eq(p, p2),
-            (
-                Predicate::Comparison(op, ref l, ref r),
-                Predicate::Comparison(op2, ref l2, ref r2),
-            ) => op == op2 && l.is_identical(l2) && r.is_identical(r2),
-            (Predicate::Unit(ref t), Predicate::Unit(ref t2)) => t.is_identical(t2),
-            _ => false,
-        }
-    }
-}
-
-impl From<&bool> for Term {
-    fn from(val: &bool) -> Self {
-        Term::Predicate(if *val {
-            Predicate::True.into()
-        } else {
-            Predicate::False.into()
-        })
-    }
-}
-
 impl From<bool> for Predicate {
     fn from(val: bool) -> Self {
         if val {
-            Predicate::True
-        } else {
-            Predicate::False
-        }
-    }
-}
-
-impl From<&bool> for Predicate {
-    fn from(val: &bool) -> Self {
-        if *val {
             Predicate::True
         } else {
             Predicate::False
@@ -421,8 +416,8 @@ impl From<&Term> for Term {
     }
 }
 
-impl From<Arc<Predicate>> for Term {
-    fn from(pred: Arc<Predicate>) -> Self {
+impl From<Handle<Predicate>> for Term {
+    fn from(pred: Handle<Predicate>) -> Self {
         Term::Predicate(pred)
     }
 }
@@ -433,7 +428,7 @@ impl From<Predicate> for Term {
     }
 }
 
-impl From<Term> for Arc<Predicate> {
+impl From<Term> for Handle<Predicate> {
     fn from(term: Term) -> Self {
         match term {
             Term::Predicate(pred) => pred,
@@ -502,8 +497,8 @@ impl Predicate {
     }
 
     #[must_use]
-    pub fn new_comparison(op: CmpOp, lhs: Term, rhs: Term) -> Self {
-        Predicate::Comparison(op, lhs, rhs)
+    pub fn new_comparison(op: CmpOp, lhs: &Term, rhs: &Term) -> Self {
+        Predicate::Comparison(op, lhs.clone(), rhs.clone())
     }
 
     pub fn new_unit<T: Into<Term>>(var: T) -> Handle<Self> {
@@ -521,6 +516,28 @@ impl Predicate {
 #[cfg_attr(feature = "cffi", repr(C))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AbcExpression {
+    /// A Vector is a homogenous collection of terms.
+    ///
+    /// The terms within are snapshotted.
+    Vector {
+        /// Components of the vector
+        components: Vec<Term>,
+        /// The innermost type.
+        ty: crate::AbcScalar,
+    },
+
+    /// A matrix is a 2d homogenous collection of terms.
+    ///
+    /// The terms in the matrix must be vectors.
+    Matrix {
+        /// The terms, always of `Vector`.
+        components: Vec<Term>,
+        ty: crate::AbcScalar,
+    },
+    /// A unary operator applied to a term
+    ///
+    /// Currently only supports unary minus.
+    UnaryOp(UnaryOp, Term),
     /// A binary operator, e.g., x + y
     BinaryOp(BinaryOp, Term, Term),
     /// A select expression, e.g., select(x, y, z)
@@ -530,12 +547,6 @@ pub enum AbcExpression {
     Splat(Term, u32),
     /// The expression for the length of an array, e.g., ArrayLength(x)
     ArrayLength(Term),
-    /// A function call, e.g., foo(x, y)
-    /// This should correspond to a function that has been defined...
-    Call {
-        func: Handle<Summary>,
-        args: Vec<Term>,
-    },
 
     /// Cast a term to a scalar type, e.g. `i32(x)`
     Cast(Term, AbcScalar),
@@ -550,9 +561,6 @@ pub enum AbcExpression {
     /// Access an element of an array, e.g. `x[3]`
     IndexAccess { base: Term, index: Term },
 
-    /// The empty expression. This is meant to be used as a placeholder for constraint operations that have no expression.
-    /// Displaying this is therefore a parse error.
-    Empty,
     /// A store expression, which represents an assignment to an array.
     ///
     /// A store resolves to a copy of the base array, by value,
@@ -568,98 +576,42 @@ pub enum AbcExpression {
     ///
     /// A struct store resolves to a copy of the base struct, by value,
     /// with the value at the field replaced by the new value.
-    /// We keep the type here to simplify our analysis. We don't want to have
-    /// to go look up what the type of the `term` is every time we have a struct
-    /// access to figure out which field we are updating..
+    /// Here, `field_idx` corresponds to the 0-based index of the field in the struct.
     StructStore {
         base: Term,
-        fieldname: String,
-        ty: Handle<AbcType>,
+        field_idx: usize,
         value: Term,
     },
+
+    // The following are operator-like expressions..
+    /// Max of two terms
+    Max(Term, Term),
+    /// Min of two terms
+    Min(Term, Term),
+    /// Absolute value
+    Abs(Term),
+    /// Pow expression
+    Pow { base: Term, exponent: Term },
+    /// Dot product
+    Dot(Term, Term),
 }
 
-impl std::hash::Hash for AbcExpression {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self).hash(state);
-        match self {
-            AbcExpression::BinaryOp(op, l, r) => {
-                op.hash(state);
-                l.hash(state);
-                r.hash(state);
-            }
-            AbcExpression::Select(t1, t2, t3) => {
-                t1.hash(state);
-                t2.hash(state);
-                t3.hash(state);
-            }
-            AbcExpression::Splat(t, v) => {
-                t.hash(state);
-                v.hash(state);
-            }
-            AbcExpression::ArrayLength(t) => t.hash(state),
-            AbcExpression::Call { func, args } => {
-                Arc::as_ptr(func).hash(state);
-                args.hash(state);
-            }
-            AbcExpression::Cast(t, s) => {
-                t.hash(state);
-                s.hash(state);
-            }
-            AbcExpression::FieldAccess {
-                base,
-                ty,
-                fieldname,
-            } => {
-                base.hash(state);
-                Arc::as_ptr(ty).hash(state);
-                fieldname.hash(state);
-            }
-            AbcExpression::IndexAccess { base, index } => {
-                base.hash(state);
-                index.hash(state);
-            }
-            AbcExpression::Store { base, index, value } => {
-                base.hash(state);
-                index.hash(state);
-                value.hash(state);
-            }
-            AbcExpression::StructStore {
-                base,
-                fieldname,
-                ty,
-                value,
-            } => {
-                base.hash(state);
-                fieldname.hash(state);
-                Arc::as_ptr(ty).hash(state);
-                value.hash(state);
-            }
-
-            AbcExpression::Empty => {}
-        }
-    }
-}
-
-//
 macro_rules! expression_sub {
     ($self:ident, $name:ident, ($($args:expr),*)) => {
         match $self {
-            Self::Empty => Self::Empty,
+            Self::Vector{components, ty} => Self::Vector {
+                components: components.iter().map(|t| t.$name($($args),*)).collect(),
+                ty: *ty
+            },
+            Self::Matrix{components, ty} => Self::Matrix {
+                components: components.iter().map(|t| t.$name($($args),*)).collect(),
+                ty: *ty
+            },
+            Self::UnaryOp(op, t) => Self::UnaryOp(*op, t.$name($($args),*)),
             Self::Cast(t, s) => Self::Cast(t.$name($($args),*), *s),
             Self::ArrayLength(t) => Self::ArrayLength(t.$name($($args),*)),
             Self::BinaryOp(op, l, r) => {
                 Self::BinaryOp(*op, l.$name($($args),*), r.$name($($args),*))
-            }
-            Self::Call { func, args } => {
-                let mut new_args = Vec::with_capacity(args.len());
-                for arg in args {
-                    new_args.push(arg.$name($($args),*))
-                }
-                Self::Call {
-                    func: func.clone(),
-                    args: new_args,
-                }
             }
             Self::FieldAccess {
                 base,
@@ -689,15 +641,30 @@ macro_rules! expression_sub {
             },
             Self::StructStore {
                 base,
-                fieldname,
-                ty,
+                field_idx,
                 value,
             } => Self::StructStore {
                 base: base.$name($($args),*),
-                fieldname: fieldname.clone(),
-                ty: ty.clone(),
+                field_idx: field_idx.clone(),
                 value: value.$name($($args),*),
             },
+            Self::Max(a, b) => Self::Max(
+                a.$name($($args),*),
+                b.$name($($args),*),
+            ),
+            Self::Min(a, b)  => Self::Min(
+                a.$name($($args),*),
+                b.$name($($args),*),
+            ),
+            Self::Abs(t) => Self::Abs(t.$name($($args),*)),
+            Self::Pow { base, exponent } => Self::Pow {
+                base: base.$name($($args),*),
+                exponent: exponent.$name($($args),*),
+            },
+            Self::Dot(a, b) => Self::Dot (
+                a.$name($($args),*),
+                b.$name($($args),*),
+            )
         }
     }
 }
@@ -757,7 +724,7 @@ impl SubstituteTerm for Predicate {
 impl std::fmt::Display for AbcExpression {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            AbcExpression::Splat(expr, size) => {
+            Self::Splat(expr, size) => {
                 f.write_char('<')?;
                 f.write_str(&expr.to_string())?;
                 f.write_str(&expr.to_string())?;
@@ -767,41 +734,90 @@ impl std::fmt::Display for AbcExpression {
                 }
                 f.write_char('>')
             }
-            AbcExpression::BinaryOp(op, lhs, rhs) => write!(f, "{lhs} {op} {rhs}"),
-            AbcExpression::Select(pred, then_expr, else_expr) => {
+            Self::UnaryOp(op, term) => write!(f, "{op}({term})"),
+            Self::Vector { components, .. } | Self::Matrix { components, .. } => {
+                if components.is_empty() {
+                    f.write_str("< >")
+                } else {
+                    f.write_str("")?;
+                    f.write_str(&components.first().unwrap().to_string())?;
+                    for term in components.get(1..).unwrap_or_default().iter() {
+                        f.write_str(", ")?;
+                        f.write_str(&term.to_string())?;
+                    }
+                    f.write_char('>')
+                }
+            }
+            Self::BinaryOp(op, lhs, rhs) => write!(f, "{lhs} {op} {rhs}"),
+            Self::Select(pred, then_expr, else_expr) => {
                 write!(f, "select({pred}, {then_expr}, {else_expr})")
             }
-            AbcExpression::ArrayLength(var) => write!(f, "length({var})"),
-            AbcExpression::Call { func, args } => {
-                write!(
-                    f,
-                    "{}({})",
-                    func,
-                    args.iter()
-                        .map(std::string::ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            }
-            AbcExpression::Cast(expr, ty) => write!(f, "cast({expr}, {ty})"),
-            AbcExpression::FieldAccess {
+            Self::ArrayLength(var) => write!(f, "length({var})"),
+            Self::Cast(expr, ty) => write!(f, "cast({expr}, {ty})"),
+            Self::FieldAccess {
                 base, fieldname, ..
             } => {
                 write!(f, "{base}.{fieldname}")
             }
-            AbcExpression::IndexAccess { base, index } => write!(f, "{base}[{index}]"),
-            AbcExpression::Empty => write!(f, "%PARSE_ERROR"),
-            AbcExpression::Store { base, index, value } => {
+            Self::IndexAccess { base, index } => write!(f, "{base}[{index}]"),
+            Self::Store { base, index, value } => {
                 write!(f, "store({base}, {index}, {value})")
             }
-            AbcExpression::StructStore {
+            Self::StructStore {
                 base,
-                fieldname,
+                field_idx,
                 value,
                 ..
             } => {
-                write!(f, "store_field({base}, {fieldname}, {value})")
+                write!(f, "store_field({base}, {field_idx}, {value})")
             }
+            Self::Max(a, b) => write!(f, "max({a}, {b})"),
+            Self::Min(a, b) => write!(f, "min({a}, {b})"),
+            Self::Abs(t) => write!(f, "abs({t})"),
+            Self::Pow { base, exponent } => write!(f, "pow({base}, {exponent})"),
+            Self::Dot(a, b) => write!(f, "dot({a}, {b})"),
+        }
+    }
+}
+
+/// A struct field is a pair of a name and a type.
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct StructField {
+    name: String,
+    ty: Handle<AbcType>,
+}
+
+impl StructField {
+    /// Create a new struct field with the given name and type.
+    #[must_use]
+    pub fn new(name: String, ty: Handle<AbcType>) -> Self {
+        Self { name, ty }
+    }
+
+    /// Return a reference to the name of the field
+    #[must_use]
+    pub fn get_name(&self) -> &str {
+        &self.name
+    }
+
+    /// Return a reference to the type of the field
+    #[must_use]
+    pub fn get_ty(&self) -> &Handle<AbcType> {
+        &self.ty
+    }
+}
+
+impl<T, U> From<(T, U)> for StructField
+where
+    T: Into<String>,
+    U: Into<Handle<AbcType>>,
+{
+    fn from((name, ty): (T, U)) -> Self {
+        Self {
+            name: name.into(),
+            ty: ty.into(),
         }
     }
 }
@@ -809,11 +825,11 @@ impl std::fmt::Display for AbcExpression {
 /// Provides an interface to define a type in the constraint system.
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AbcType {
     // A user defined compound type.
     Struct {
-        members: FastHashMap<String, Handle<AbcType>>,
+        members: Vec<StructField>,
     },
 
     /// An array with a known size.
@@ -821,8 +837,12 @@ pub enum AbcType {
         ty: Handle<AbcType>,
         size: std::num::NonZeroU32,
     },
+
     /// An array with an unknown size.
-    DynamicArray { ty: Handle<AbcType> },
+    DynamicArray {
+        ty: Handle<AbcType>,
+    },
+
     /// A builtin scalar type.
     Scalar(AbcScalar),
 
@@ -832,9 +852,53 @@ pub enum AbcType {
     NoneType,
 }
 
+impl From<AbcScalar> for AbcType {
+    fn from(scalar: AbcScalar) -> Self {
+        Self::Scalar(scalar)
+    }
+}
+
+impl TryFrom<AbcType> for AbcScalar {
+    type Error = &'static str;
+
+    fn try_from(value: AbcType) -> Result<Self, Self::Error> {
+        match value {
+            AbcType::Scalar(scalar) => Ok(scalar),
+            _ => Err("Not a scalar"),
+        }
+    }
+}
+
+/// An `AbcType` can be converted from anything that can iterate over a pair of `string, type` pairs.
+///
+/// N.B. This trait implementation allows for the type to be constructed from a `HashMap`.
+/// However, the order of the fields in a `HashMap` is not guaranteed to be preserved.
+impl<K, V, T> From<T> for AbcType
+where
+    K: Into<String>,
+    V: Into<Handle<AbcType>>,
+    T: IntoIterator<Item = (K, V)>,
+{
+    fn from(fields: T) -> Self {
+        Self::Struct {
+            members: fields
+                .into_iter()
+                .map(|(name, ty)| StructField {
+                    name: name.into(),
+                    ty: ty.into(),
+                })
+                .collect(),
+        }
+    }
+}
+
 impl AbcType {
     pub fn is_none_type(&self) -> bool {
         matches!(self, AbcType::NoneType)
+    }
+
+    pub fn new_struct(members: Vec<StructField>) -> Self {
+        AbcType::Struct { members }
     }
 }
 
@@ -843,7 +907,7 @@ impl std::fmt::Display for AbcType {
         match self {
             AbcType::Struct { members } => {
                 write!(f, "{{")?;
-                for (name, ty) in members {
+                for StructField { name, ty } in members {
                     write!(f, "{name}: {ty}, ")?;
                 }
                 write!(f, "}}")
@@ -895,7 +959,6 @@ impl std::fmt::Display for AbcScalar {
 }
 
 /// A summary is akin to a function reference.
-/// For right now, we are just storing the name and the nargs...
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -904,7 +967,7 @@ pub struct Summary {
     pub args: Vec<Term>,
     pub return_type: Handle<AbcType>,
 
-    pub(self) ret_term: Term,
+    ret_term: Term,
 
     /// Constraints are predicates that must hold for the summary to be valid
     pub constraints: Vec<Constraint>,
@@ -966,7 +1029,7 @@ lazy_static! {
         name: "@ret".to_string()
     }));
     pub static ref NONETYPE: Arc<AbcType> = Arc::new(AbcType::NoneType);
-    pub static ref EMPTY_TERM: Term = Term::Expr(Arc::new(AbcExpression::Empty));
+    pub static ref EMPTY_TERM: Term = Term::Empty;
 }
 
 /// A literal, ripped directly from naga's literal, with the `bool` literal dropped
@@ -1110,9 +1173,17 @@ pub enum Term {
     Empty,
 }
 
+/// Two terms are equal if they are the same type and have the same contents.
 impl PartialEq for Term {
     fn eq(&self, other: &Self) -> bool {
-        self.is_identical(other)
+        match (self, other) {
+            (Term::Expr(a), Term::Expr(b)) => Arc::ptr_eq(a, b) || a == b,
+            (Term::Var(a), Term::Var(b)) => Arc::ptr_eq(a, b) || a == b,
+            (Term::Literal(a), Term::Literal(b)) => a == b,
+            (Term::Predicate(a), Term::Predicate(b)) => Arc::ptr_eq(a, b) || a == b,
+            (Term::Empty, Term::Empty) => true,
+            _ => false,
+        }
     }
 }
 impl Eq for Term {}
@@ -1144,7 +1215,7 @@ impl Term {
     }
     /// Determine whether `self` and `with` have identical structure and references.
     ///
-    /// This is different from equality in that it uses `Arc::ptr_eq` to check its contents.
+    /// This is different from equality in that it requires `Arc::ptr_eq` to check its contents.
     fn is_identical(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Expr(a), Self::Expr(b)) => Arc::ptr_eq(a, b),
@@ -1163,8 +1234,7 @@ impl SubstituteTerm for Term {
     /// If `self` and `from` are identical, this method just returns `with`
     #[must_use]
     fn substitute(&self, from: &Term, with: &Term) -> Self {
-        if self.is_identical(from) {
-            println!("Found a match for {self:?}, replacing with {with:?}");
+        if self == from {
             with.clone()
         } else {
             match self {
@@ -1180,8 +1250,7 @@ impl SubstituteTerm for Term {
             return self.substitute(mapping[0].0, mapping[0].1);
         }
         // Otherwise, if we are identical to one of the terms being replaced, then return what it is replaced with.
-        if let Some(t) = mapping.iter().find(|p| p.0.is_identical(self)) {
-            println!("Found a match for {:?}, replacing with {:?}", self, t.1);
+        if let Some(t) = mapping.iter().find(|p| p.0 == self) {
             t.1.clone()
         } else {
             match self {
@@ -1223,7 +1292,7 @@ Implementation of predicate constructors for term
 impl Term {
     /// Create a new unit predicate term.
     #[must_use]
-    pub fn new_unit_pred(p: Term) -> Self {
+    pub fn new_unit_pred(p: &Term) -> Self {
         Term::Predicate(Predicate::new_unit(p))
     }
     /// Create a term holding the `true` predicate
@@ -1240,19 +1309,19 @@ impl Term {
 
     /// Creates lhs && rhs
     #[must_use]
-    pub fn new_logical_and(lhs: Term, rhs: Term) -> Self {
-        Term::Predicate(Predicate::new_and(lhs, rhs))
+    pub fn new_logical_and(lhs: &Term, rhs: &Term) -> Self {
+        Term::Predicate(Predicate::new_and(lhs.clone(), rhs.clone()))
     }
 
     /// Constructs lhs || rhs
     #[must_use]
-    pub fn new_logical_or(lhs: Term, rhs: Term) -> Self {
-        Term::Predicate(Predicate::new_or(lhs, rhs))
+    pub fn new_logical_or(lhs: &Term, rhs: &Term) -> Self {
+        Term::Predicate(Predicate::new_or(lhs.clone(), rhs.clone()))
     }
 
     /// Constructs lhs `op` rhs
     #[must_use]
-    pub fn new_comparison(op: CmpOp, lhs: Term, rhs: Term) -> Self {
+    pub fn new_comparison(op: CmpOp, lhs: &Term, rhs: &Term) -> Self {
         Term::Predicate(Predicate::new_comparison(op, lhs, rhs).into())
     }
 
@@ -1262,9 +1331,9 @@ impl Term {
     ///
     /// [`Predicate::Not`]: crate::Predicate::Not
     #[must_use]
-    pub fn new_not(t: Term) -> Self {
-        Term::Predicate(match t {
-            Term::Predicate(pred) => Predicate::new_not(pred),
+    pub fn new_not(t: &Term) -> Self {
+        Term::Predicate(match *t {
+            Term::Predicate(ref pred) => Predicate::new_not(pred.clone()),
             _ => Predicate::new_not(Predicate::new_unit(t)),
         })
     }
@@ -1294,27 +1363,27 @@ impl Term {
         Term::Expr(AbcExpression::Cast(term, ty).into())
     }
 
-    #[must_use]
-    pub fn new_call(func: Handle<Summary>, args: Vec<Term>) -> Self {
-        Term::Expr(AbcExpression::Call { func, args }.into())
-    }
     /// Wrapper around making a new predicate and placing the predicate in this expression.
     #[must_use]
-    pub fn new_cmp_op(op: CmpOp, lhs: Term, rhs: Term) -> Self {
+    pub fn new_cmp_op(op: CmpOp, lhs: &Term, rhs: &Term) -> Self {
         Term::Predicate(Predicate::new_comparison(op, lhs, rhs).into())
     }
 
     #[must_use]
-    pub fn new_index_access(base: Term, index: Term) -> Self {
-        AbcExpression::IndexAccess { base, index }.into()
+    pub fn new_index_access(base: &Term, index: &Term) -> Self {
+        AbcExpression::IndexAccess {
+            base: base.clone(),
+            index: index.clone(),
+        }
+        .into()
     }
 
     /// Creates a new field access expression
     #[must_use]
-    pub fn new_struct_access(base: Term, fieldname: String, ty: Handle<AbcType>) -> Self {
+    pub fn new_struct_access(base: &Term, fieldname: String, ty: Handle<AbcType>) -> Self {
         Term::Expr(
             AbcExpression::FieldAccess {
-                base,
+                base: base.clone(),
                 fieldname,
                 ty,
             }
@@ -1340,24 +1409,41 @@ impl Term {
     }
 
     #[must_use]
-    pub fn new_binary_op(op: BinaryOp, lhs: Term, rhs: Term) -> Self {
-        AbcExpression::BinaryOp(op, lhs, rhs).into()
+    pub fn new_vector(terms: &[Term], ty: AbcScalar) -> Self {
+        let components = terms.iter().cloned().collect();
+        AbcExpression::Vector { components, ty }.into()
     }
 
     #[must_use]
-    pub fn new_select(pred: Term, then_expr: Term, else_expr: Term) -> Self {
+    pub fn new_matrix(terms: &[Term], ty: AbcScalar) -> Self {
+        let components = terms.iter().cloned().collect();
+        AbcExpression::Matrix { components, ty }.into()
+    }
+
+    #[must_use]
+    pub fn new_unary_op(op: UnaryOp, t: &Term) -> Self {
+        AbcExpression::UnaryOp(op, t.clone()).into()
+    }
+
+    #[must_use]
+    pub fn new_binary_op(op: BinaryOp, lhs: &Term, rhs: &Term) -> Self {
+        AbcExpression::BinaryOp(op, lhs.clone(), rhs.clone()).into()
+    }
+
+    #[must_use]
+    pub fn new_select(pred: &Term, then_expr: &Term, else_expr: &Term) -> Self {
         // In select, term *should* be a predicate.
         // Otherwise, we have to make it into one.
-        let pred = Term::Predicate(match pred {
-            Term::Predicate(p) => p.clone(),
+        let pred = Term::Predicate(match *pred {
+            Term::Predicate(ref p) => p.clone(),
             _ => Predicate::new_unit(pred),
         });
-        AbcExpression::Select(pred, then_expr, else_expr).into()
+        AbcExpression::Select(pred.clone(), then_expr.clone(), else_expr.clone()).into()
     }
 
     #[must_use]
-    pub fn make_array_length(var: Term) -> Self {
-        AbcExpression::ArrayLength(var).into()
+    pub fn make_array_length(var: &Term) -> Self {
+        AbcExpression::ArrayLength(var.clone()).into()
     }
 
     #[must_use]
@@ -1366,21 +1452,49 @@ impl Term {
     }
 
     #[must_use]
-    pub fn new_struct_store(
-        base: Term,
-        fieldname: String,
-        ty: Handle<AbcType>,
-        value: Term,
-    ) -> Self {
+    pub fn new_struct_store(base: Term, field_idx: usize, value: Term) -> Self {
         Term::Expr(
             AbcExpression::StructStore {
                 base,
-                fieldname,
-                ty,
+                field_idx,
                 value,
             }
             .into(),
         )
+    }
+
+    #[must_use]
+    pub fn new_abs(term: &Term) -> Self {
+        Term::Expr(AbcExpression::Abs(term.clone()).into())
+    }
+
+    #[must_use]
+    pub fn new_max(a: &Term, b: &Term) -> Self {
+        Term::Expr(AbcExpression::Max(a.clone(), b.clone()).into())
+    }
+
+    /// Construct a new min expression.
+    #[must_use]
+    pub fn new_min(a: &Term, b: &Term) -> Self {
+        Term::Expr(AbcExpression::Min(a.clone(), b.clone()).into())
+    }
+
+    /// Construct a new pow expression.
+    #[must_use]
+    pub fn new_pow(base: &Term, exponent: &Term) -> Self {
+        Term::Expr(
+            AbcExpression::Pow {
+                base: base.clone(),
+                exponent: exponent.clone(),
+            }
+            .into(),
+        )
+    }
+
+    /// Construct a new dot expression.
+    #[must_use]
+    pub fn new_dot(a: &Term, b: &Term) -> Self {
+        Term::Expr(AbcExpression::Dot(a.clone(), b.clone()).into())
     }
 }
 
@@ -1476,7 +1590,7 @@ mod test {
 
     #[rstest]
     fn test_predicate_comparison(var_x: Term, var_y: Term) {
-        let p = Predicate::new_comparison(CmpOp::Eq, var_x, var_y);
+        let p = Predicate::new_comparison(CmpOp::Eq, &var_x, &var_y);
         assert_eq!(p.to_string(), "(x) == (y)");
     }
 
@@ -1494,7 +1608,7 @@ mod test {
 
     #[rstest]
     fn test_term_new_logical_and(var_x: Term) {
-        let term = Term::new_logical_and(var_x.clone(), var_x);
+        let term = Term::new_logical_and(&var_x, &var_x);
         assert_eq!(term.to_string(), "(x) && (x)");
     }
 
@@ -1505,7 +1619,7 @@ mod test {
         let any_pred = Term::new_var(Var {
             name: "X".to_string(),
         });
-        let term = Term::new_logical_or(literal_true, any_pred);
+        let term = Term::new_logical_or(&literal_true, &any_pred);
         // This should be the exact same inner.
         assert_eq!(term.to_string(), "true");
     }
@@ -1515,13 +1629,13 @@ mod test {
         let var_y = Var {
             name: "y".to_string(),
         };
-        let term = Term::new_comparison(CmpOp::Eq, var_x, Term::from(var_y));
+        let term = Term::new_comparison(CmpOp::Eq, &var_x, &Term::from(var_y));
         assert_eq!(term.to_string(), "(x) == (y)");
     }
 
     #[rstest]
     fn test_term_new_not(var_x: Term) {
-        let term = Term::new_not(var_x);
+        let term = Term::new_not(&var_x);
         assert_eq!(term.to_string(), "!(x)");
     }
 
@@ -1540,20 +1654,10 @@ mod test {
     }
 
     #[rstest]
-    fn test_term_new_call() {
-        let summary = Summary::new("foo".to_string(), 2);
-        let term = Term::new_call(
-            Arc::new(summary),
-            vec![Term::new_literal(1), Term::new_literal(2)],
-        );
-        assert_eq!(term.to_string(), "foo(1, 2)");
-    }
-
-    #[rstest]
     fn test_term_new_index_access() {
         let base = Term::new_var(Var::from("arr"));
         let index = Term::new_literal(0);
-        let term = Term::new_index_access(base, index);
+        let term = Term::new_index_access(&base, &index);
         assert_eq!(term.to_string(), "arr[0]");
     }
 
@@ -1561,7 +1665,7 @@ mod test {
     fn test_term_new_struct_access() {
         let base = Term::new_var(Var::from("obj"));
         let ty = Arc::new(AbcType::NoneType);
-        let term = Term::new_struct_access(base, "field".to_string(), ty);
+        let term = Term::new_struct_access(&base, "field".to_string(), ty);
         assert_eq!(term.to_string(), "obj.field");
     }
 
@@ -1570,20 +1674,20 @@ mod test {
         let pred = Term::new_literal_true();
         let then_expr = Term::new_literal(1);
         let else_expr = Term::new_literal(0);
-        let term = Term::new_select(pred, then_expr, else_expr);
+        let term = Term::new_select(&pred, &then_expr, &else_expr);
         assert_eq!(term.to_string(), "select(true, 1, 0)");
     }
 
     #[rstest]
     fn test_term_make_array_length() {
         let var = Term::new_var(Var::from("arr"));
-        let term = Term::make_array_length(var);
+        let term = Term::make_array_length(&var);
         assert_eq!(term.to_string(), "length(arr)");
     }
 
     #[rstest]
     fn test_term_substitute(var_x: Term, var_y: Term) {
-        let term = Term::new_logical_and(var_x.clone(), var_y.clone());
+        let term = Term::new_logical_and(&var_x, &var_y);
         let term2 = term.substitute(&var_x, &var_y);
         assert_eq!(term2.to_string(), "(y) && (y)");
     }
@@ -1596,7 +1700,7 @@ mod test {
         let w_term = Term::new_var(Var {
             name: "w".to_string(),
         });
-        let term = Term::new_logical_and(var_x.clone(), var_y.clone());
+        let term = Term::new_logical_and(&var_x, &var_y);
         let term2 = term.substitute_multi(&[(&var_x, &z_term), (&var_y, &w_term)]);
         assert_eq!(term2.to_string(), "(z) && (w)");
     }
