@@ -4,9 +4,12 @@
 [package]
 name = "abc-helper"
 version = "0.4.0"
+authors = ["Benjamin Valpey"]
 edition = "2021"
-license = "MIT OR Apache-2.0"
 description = "An array bounds checking solver for wgsl compilers"
+repository = "github.com:pyxis-roc/wgpu-abc-helper.git"
+license = "MIT OR Apache-2.0"
+publish = false
 
 [dependencies]
 lazy_static = { version = "1.4.0" }
