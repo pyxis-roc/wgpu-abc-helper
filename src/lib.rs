@@ -58,6 +58,8 @@ mod macros;
 #[doc(hidden)]
 use macros::cbindgen_annotate;
 
+pub mod solvers;
+
 /// Objects that derive this trait mean they support replacing terms within them with other terms.
 trait SubstituteTerm {
     /// This should always return a clone of `to` if `self.is_identical(from)` is true.
@@ -514,7 +516,7 @@ impl Predicate {
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AbcExpression {
     /// A Vector is a homogenous collection of terms.
     ///
@@ -945,6 +947,34 @@ pub enum AbcScalar {
     AbstractFloat,
 }
 
+// Aliases for common types.
+
+/// Convenience alias for a 32-bit unsigned integer.
+pub const ABC_U32_SCALAR: AbcScalar = AbcScalar::Uint(4);
+/// Convenience alias for a 32-bit signed integer.
+pub const ABC_I32_SCALAR: AbcScalar = AbcScalar::Sint(4);
+/// Convenience alias for a 64-bit unsigned integer.
+pub const ABC_U64_SCALAR: AbcScalar = AbcScalar::Uint(8);
+/// Convenience alias for a 64-bit signed integer.
+pub const ABC_I64_SCALAR: AbcScalar = AbcScalar::Sint(8);
+/// Convenience alias for a 16-bit unsigned integer.
+pub const ABC_U16_SCALAR: AbcScalar = AbcScalar::Uint(2);
+/// Convenience alias for a 16-bit signed integer.
+pub const ABC_I16_SCALAR: AbcScalar = AbcScalar::Sint(2);
+/// Convenience alias for a 32-bit floating point number.
+pub const ABC_F32_SCALAR: AbcScalar = AbcScalar::Float(4);
+/// Convenience alias for a 64-bit floating point number.
+pub const ABC_F64_SCALAR: AbcScalar = AbcScalar::Float(8);
+
+pub const ABC_U32_TY: AbcType = AbcType::Scalar(ABC_U32_SCALAR);
+pub const ABC_I32_TY: AbcType = AbcType::Scalar(ABC_I32_SCALAR);
+pub const ABC_U64_TY: AbcType = AbcType::Scalar(ABC_U64_SCALAR);
+pub const ABC_I64_TY: AbcType = AbcType::Scalar(ABC_I64_SCALAR);
+pub const ABC_U16_TY: AbcType = AbcType::Scalar(ABC_U16_SCALAR);
+pub const ABC_I16_TY: AbcType = AbcType::Scalar(ABC_I16_SCALAR);
+pub const ABC_F32_TY: AbcType = AbcType::Scalar(ABC_F32_SCALAR);
+pub const ABC_F64_TY: AbcType = AbcType::Scalar(ABC_F64_SCALAR);
+
 impl std::fmt::Display for AbcScalar {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
@@ -1158,7 +1188,7 @@ impl From<std::num::NonZeroI16> for Literal {
 /// It also simplifies the logic for storing references to variables.
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Clone, Debug, strum_macros::Display)]
+#[derive(Clone, Debug, strum_macros::Display, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "cffi", repr(C))]
 pub enum Term {
     #[strum(to_string = "{0}")]
@@ -1171,40 +1201,6 @@ pub enum Term {
     Predicate(Handle<Predicate>),
     /// An empty term or predicate.
     Empty,
-}
-
-/// Two terms are equal if they are the same type and have the same contents.
-impl PartialEq for Term {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Term::Expr(a), Term::Expr(b)) => Arc::ptr_eq(a, b) || a == b,
-            (Term::Var(a), Term::Var(b)) => Arc::ptr_eq(a, b) || a == b,
-            (Term::Literal(a), Term::Literal(b)) => a == b,
-            (Term::Predicate(a), Term::Predicate(b)) => Arc::ptr_eq(a, b) || a == b,
-            (Term::Empty, Term::Empty) => true,
-            _ => false,
-        }
-    }
-}
-impl Eq for Term {}
-
-impl std::hash::Hash for Term {
-    /// The hash of a term hashes its discriminant and then its contents.
-    ///
-    /// Enum fields that are Arcs hash the pointer itself, not the data it contains.
-    /// Thus, the hash of a `Term` is not guaranteed to be the same
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self).hash(state);
-        match self {
-            Self::Expr(e) => Arc::as_ptr(e).hash(state),
-            Self::Var(v) => Arc::as_ptr(v).hash(state),
-            Self::Literal(l) => l.hash(state),
-            Self::Predicate(p) => Arc::as_ptr(p).hash(state),
-            Self::Empty => {
-                // Do nothing...
-            }
-        }
-    }
 }
 
 impl Term {

@@ -18,15 +18,18 @@ log = "0.4.22"
 serde = { version = "1.0.130", features = ["derive", "rc"], optional = true }
 serde_json = { version = "1.0.68", optional = true }
 arbitrary = { version = "1.3", features = ["derive"], optional = true }
-ffi-support = { version = "0.4.4", optional = true }
+ffi-support = { version = "^0.4.4", optional = true }
+bitflags = {version = "^2.6.0"}
+num = {version = "^0.4.0"}
+multiversion = "0.7.4"
 
 [build-dependencies]
 cbindgen = { version = "0.24.0", optional = true }
 
 [features]
-serialize = ["dep:serde", "serde_json"]
-deserialize = ["dep:serde", "serde_json"]
-arbitrary = ["dep:arbitrary"]
+serialize = ["dep:serde", "serde_json", "bitflags/serde"]
+deserialize = ["dep:serde", "serde_json", "bitflags/serde"]
+arbitrary = ["dep:arbitrary", "bitflags/arbitrary"]
 cffi = ["dep:cbindgen", "dep:ffi-support"]
 
 
@@ -46,3 +49,5 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rust_analyzer)'] }
 pedantic = {level = "warn"}
 must_use_candidate = {level = "allow", priority = 1}
 default_trait_access = {level = "allow", priority = 1}
+module_name_repetitions = {level = "allow", priority = 1} # We have FFI functions that need to have module names repeated.
+wildcard_imports = {level = "allow", priority = 1} # Wildcard imports are fine. Anything else is too verbose.
