@@ -1652,6 +1652,7 @@ lazy_static! {
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "cffi", repr(C))]
 pub enum Literal {
     #[strum(to_string = "{0}")]
     /// May not be NaN or infinity, as defined by the wgsl spec..
