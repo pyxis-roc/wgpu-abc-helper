@@ -9,4 +9,4 @@ SPDX-License-Identifier: CC-BY-SA-4.0
 
 abc_helper provides ffi bindings for C++.
 
-the `ffi_examples` folder contains an example project that uses CMake to 
+the `ffi_examples` folder contains an example project that shows how to use this lirbary from C++.
