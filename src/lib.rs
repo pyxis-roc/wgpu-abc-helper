@@ -41,9 +41,9 @@ provides a few mechanisms to handle loops.
 */
 
 // Clippy lints
-#![allow(clippy::must_use_candidate)]
+#![allow(clippy::must_use_candidate, clippy::default_trait_access)]
 
-use std::{fmt::Write, sync::Arc};
+use std::{borrow::Borrow, fmt::Write, sync::Arc};
 
 type FastHashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 type FastHashSet<K> = rustc_hash::FxHashSet<K>;
@@ -59,6 +59,10 @@ mod macros;
 use macros::cbindgen_annotate;
 
 pub mod solvers;
+
+pub use solvers::interval::{
+    translator::IntervalKind, BoolInterval, I32Interval, U32Interval, U64Interval,
+};
 
 /// Objects that derive this trait mean they support replacing terms within them with other terms.
 trait SubstituteTerm {
@@ -80,23 +84,29 @@ mod helper;
 #[allow(unused_imports)] // This is a re epxort
 pub use helper::*;
 
-/// An opaque marker that may be provided when adding constraints to track the constraint.
-/// The `OpaqueMarker` must be trivially serializable and deserializeable, regardless of the feature flags.
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub struct OpaqueMarker<T>
-where
-    T: Clone + std::fmt::Debug,
-{
-    payload: T,
+/// The maximum number of constraints that can be added per summary.
+pub const CONSTRAINT_LIMIT: usize = u32::MAX as usize;
+
+/// The maximum number of summaries that can be added to a constraint helper.
+pub const SUMMARY_LIMIT: usize = (u32::MAX - 1) as usize;
+
+/// Unique identifier for a constraint.
+///
+/// When a constraint is added to the constraint system, it is assigned a unique identifier that can be used to track the constraint.
+///
+/// When solving constraints, this identifier will be used to report the results.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ConstraintId {
+    /// The function index that the constraint is associated with.
+    func: u32,
+    /// The constraint index within the function.
+    idx: u32,
 }
 
-impl<T> OpaqueMarker<T>
-where
-    T: Clone + std::fmt::Debug,
-{
-    pub fn new(payload: T) -> Self {
-        Self { payload }
+impl std::fmt::Display for ConstraintId {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "({}, {})", self.func, self.idx)
     }
 }
 
@@ -205,13 +215,31 @@ pub enum BinaryOp {
     Shr,
 }
 
+impl BinaryOp {
+    #[inline]
+    const fn variant_name(self) -> &'static str {
+        match self {
+            BinaryOp::BitAnd => "BitAnd",
+            BinaryOp::BitOr => "BitOr",
+            BinaryOp::BitXor => "BitXor",
+            BinaryOp::Div => "Div",
+            BinaryOp::Minus => "Minus",
+            BinaryOp::Mod => "Mod",
+            BinaryOp::Plus => "Plus",
+            BinaryOp::Shl => "Shl",
+            BinaryOp::Shr => "Shr",
+            BinaryOp::Times => "Times",
+        }
+    }
+}
+
 cbindgen_annotate! {
 "derive-const-casts"
 #[doc = "A comparison operator used by ccates."]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
-#[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash, strum_macros::AsRefStr)]
 pub enum CmpOp {
     #[strum(to_string = "==")]
     #[cfg_attr(any(feature = "serialize", feature = "deserialize"), serde(rename = "=="))]
@@ -250,11 +278,56 @@ impl CmpOp {
 }
 
 /// A constraint operation is any comparison operator OR an assignment.
+#[derive(
+    strum_macros::Display, Debug, Clone, Copy, Eq, PartialEq, Hash, strum_macros::AsRefStr,
+)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+#[cfg_attr(feature = "cffi", repr(C))]
+pub enum AssumptionOp {
+    #[strum(to_string = ":=")]
+    Assign,
+    #[strum(to_string = "<")]
+    Lt,
+    #[strum(to_string = ">")]
+    Gt,
+    #[strum(to_string = "<=")]
+    Leq,
+    #[strum(to_string = ">=")]
+    Geq,
+}
+
+impl From<AssumptionOp> for CmpOp {
+    fn from(op: AssumptionOp) -> Self {
+        match op {
+            AssumptionOp::Lt => Self::Lt,
+            AssumptionOp::Gt => Self::Gt,
+            AssumptionOp::Leq => Self::Leq,
+            AssumptionOp::Geq => Self::Geq,
+            AssumptionOp::Assign => Self::Eq,
+        }
+    }
+}
+
+impl TryFrom<CmpOp> for AssumptionOp {
+    type Error = ();
+    /// Attempt to cast the comparison operator to an assumption comparison operator.
+    fn try_from(op: CmpOp) -> Result<Self, Self::Error> {
+        match op {
+            CmpOp::Lt => Ok(AssumptionOp::Lt),
+            CmpOp::Gt => Ok(AssumptionOp::Gt),
+            CmpOp::Leq => Ok(AssumptionOp::Leq),
+            CmpOp::Geq => Ok(AssumptionOp::Geq),
+            CmpOp::Eq => Ok(AssumptionOp::Assign),
+            CmpOp::Neq => Err(()),
+        }
+    }
+}
+
+/// A constraint operation is any comparison operator OR an assignment.
 #[derive(strum_macros::Display, Debug, Clone, Copy, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "cffi", repr(C))]
 pub enum ConstraintOp {
-    #[strum(to_string = ":=")]
-    Assign,
     #[strum(to_string = "UnaryConstraint")]
     Unary,
     #[strum(to_string = "{0}")]
@@ -262,8 +335,8 @@ pub enum ConstraintOp {
 }
 
 impl From<CmpOp> for ConstraintOp {
-    fn from(value: CmpOp) -> Self {
-        Self::Cmp(value)
+    fn from(op: CmpOp) -> Self {
+        ConstraintOp::Cmp(op)
     }
 }
 
@@ -275,15 +348,8 @@ impl From<CmpOp> for ConstraintOp {
     any(feature = "serialize", feature = "deserialize"),
     serde(tag = "kind")
 )]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, strum_macros::EnumIs)]
 pub enum Constraint {
-    /// An assignment constraint, e.g. x = y
-    Assign {
-        guard: Option<Handle<Predicate>>,
-        lhs: Term,
-        rhs: Term,
-    },
-
     /// A comparison constraint, e.g. length(x) < y
     Cmp {
         guard: Option<Handle<Predicate>>,
@@ -303,15 +369,148 @@ pub enum Constraint {
     },
 }
 
+impl std::fmt::Display for Constraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.get_guard() {
+            Some(guard) => write!(f, "{{{guard}}} "),
+            None => Ok(()),
+        }?;
+        match self {
+            Constraint::Cmp { lhs, op, rhs, .. } => write!(f, "{lhs} {op} {rhs}"),
+            Constraint::Identity { term, .. } => write!(f, "{term}"),
+        }
+    }
+}
+
+// An assumption `Inequality` is a special case of
+#[derive(strum_macros::EnumIs, Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+#[cfg_attr(
+    any(feature = "serialize", feature = "deserialize"),
+    serde(tag = "kind")
+)]
+pub enum Assumption {
+    /// An assignment assumption, e.g. x = y
+    Assign {
+        guard: Option<Handle<Predicate>>,
+        lhs: Term,
+        rhs: Term,
+    },
+
+    // An inequality assumption REQUIRES that `rhs` is a literal and that there is no `guard`
+    /// An inequality assumption, e.g. x < y. `y` is always a literal.
+    Inequality {
+        lhs: Term,
+        lower: Option<(Term, bool)>,
+        upper: Option<(Term, bool)>,
+    },
+}
+
+impl std::fmt::Display for Assumption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[cfg_attr(any(), rustfmt::skip)]
+        match self {
+            Self::Assign { guard: None, lhs, rhs } => write!(f, "assume({lhs} := {rhs})"),
+            Self::Assign { guard: Some(g), lhs, rhs} => write!(f, "{g} assume({lhs} := {rhs})"),
+            Self::Inequality { lhs, lower: None, upper: Some((upper, true)) } => write!(f, "assume({lhs} <= {upper})"),
+            Self::Inequality { lhs, lower: None, upper: Some((upper, false)) } => write!(f, "assume({lhs} < {upper})"),
+            Self::Inequality { lhs, lower: Some((lower, true)), upper: None } => write!(f, "assume({lhs} >= {lower})"),
+            Self::Inequality { lhs, lower: Some((lower, false)), upper: None } => write!(f, "assume({lhs} > {lower})"),
+            Self::Inequality { lhs, lower: Some((lower, true)), upper: Some((upper, true)) } => write!(f, "assume({lower} <= {lhs} <= {upper})"),
+            Self::Inequality { lhs, lower: Some((lower, true)), upper: Some((upper, false)) } => write!(f, "assume({lower} <= {lhs} < {upper})"),
+            Self::Inequality { lhs, lower: Some((lower, false)), upper: Some((upper, true)) } => write!(f, "assume({lower} < {lhs} <= {upper})"),
+            Self::Inequality { lhs, lower: Some((lower, false)), upper: Some((upper, false)) } => write!(f, "assume({lower} < {lhs} < {upper})"),
+            Self::Inequality { lhs, .. } => write!(f, "assume(?? <= {lhs} <= ??)")
+        }
+    }
+}
+
+impl Assumption {
+    #[allow(dead_code)]
+    fn get_guard(&self) -> Option<Handle<Predicate>> {
+        match self {
+            Assumption::Assign { guard, .. } => guard.clone(),
+            Assumption::Inequality { .. } => None,
+        }
+    }
+    /// Merges `other` into `self`.
+    /// The guards for `other` are ignored.
+    /// Also assumes that `self` and `other` have the same `lhs`.
+    fn merge(&mut self, other: &Self) -> bool {
+        use Assumption::Inequality;
+        let Inequality {
+            lower: ref mut low_a,
+            upper: ref mut up_a,
+            ..
+        } = *self
+        else {
+            return false;
+        };
+        let Inequality {
+            lower: ref low_b,
+            upper: ref up_b,
+            ..
+        } = other
+        else {
+            return false;
+        };
+
+        if up_b.is_some() {
+            up_a.clone_from(up_b);
+        }
+        if low_b.is_some() {
+            low_a.clone_from(low_b);
+        }
+        true
+    }
+    pub fn get_lhs(&self) -> &Term {
+        match self {
+            Self::Assign { lhs, .. } | Self::Inequality { lhs, .. } => lhs,
+        }
+    }
+
+    /// Set the lower bound for the term.
+    ///
+    /// If the term is not an inequality, or is but has already set `lower`, then this function returns false.
+    #[allow(dead_code)]
+    fn set_lower<T: Into<Term>>(&mut self, term: T, inclusive: bool) -> bool {
+        let term = term.into();
+        let Self::Inequality {
+            lower: ref mut lower @ None,
+            ..
+        } = *self
+        else {
+            return false;
+        };
+        let bound = Some((term, inclusive));
+        *lower = bound;
+        true
+    }
+
+    /// Set the upper bound for the term.
+    ///
+    /// If the term is not an inequality, or is but has already set `upper`, then this function returns false.
+    #[allow(dead_code)]
+    fn set_upper<T: Into<Term>>(&mut self, term: T, inclusive: bool) -> bool {
+        let term = term.into();
+        let Self::Inequality {
+            upper: ref mut upper @ None,
+            ..
+        } = *self
+        else {
+            return false;
+        };
+        let bound = Some((term, inclusive));
+        *upper = bound;
+        true
+    }
+}
+
 // Expands to the match that calls itself on the fields within.
 macro_rules! constraint_sub {
     ($self:ident, $name:ident, ($($args:expr),*)) => {
         match $self {
-            Self::Assign { guard, lhs, rhs } => Self::Assign {
-                guard: guard.as_ref().map(|f| f.$name($($args),*).into()),
-                lhs: lhs.$name($($args),*),
-                rhs: rhs.$name($($args),*),
-            },
             Self::Cmp { guard, lhs, op, rhs } => Self::Cmp {
                 guard: guard.as_ref().map(|f| f.$name($($args),*).into()),
                 lhs: lhs.$name($($args),*),
@@ -342,34 +541,67 @@ impl SubstituteTerm for Constraint {
     }
 }
 
-impl Constraint {
-    /// Return the guard portion of the constraint
-    fn guard(&self) -> Option<Handle<Predicate>> {
-        match self {
-            Constraint::Assign { guard, .. }
-            | Constraint::Cmp { guard, .. }
-            | Constraint::Identity { guard, .. } => guard.clone(),
+macro_rules! assumption_sub {
+    ($self:ident, $name:ident, ($($args:expr),*)) => {
+        match $self {
+            Self::Assign { guard, lhs, rhs } => Self::Assign {
+                guard: guard.as_ref().map(|f| f.$name($($args),*).into()),
+                lhs: lhs.$name($($args),*),
+                rhs: rhs.$name($($args),*),
+            },
+            Self::Inequality { lhs, lower, upper } => Self::Inequality {
+                lhs: lhs.$name($($args),*),
+                lower: lower.clone(),
+                upper: upper.clone(),
+            },
         }
+    };
+}
+
+impl SubstituteTerm for Assumption {
+    fn substitute(&self, from: &Term, to: &Term) -> Self {
+        if from.is_identical(to) {
+            return self.clone();
+        }
+        assumption_sub!(self, substitute, (from, to))
+    }
+    fn substitute_multi(&self, mapping: &[(&Term, &Term)]) -> Self {
+        if mapping.len() == 1 {
+            return self.substitute(mapping[0].0, mapping[0].1);
+        }
+        assumption_sub!(self, substitute_multi, (mapping))
     }
 }
 
-impl std::fmt::Display for Constraint {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self.guard() {
-            Some(guard) => write!(f, "{{{guard}}} "),
-            None => Ok(()),
-        }?;
+impl Constraint {
+    /// Return the guard portion of the constraint
+    fn get_guard(&self) -> Option<Handle<Predicate>> {
         match self {
-            Constraint::Assign { lhs, rhs, .. } => write!(f, "{lhs} = {rhs}"),
-            Constraint::Cmp { lhs, op, rhs, .. } => write!(f, "{lhs} {op} {rhs}"),
-            Constraint::Identity { term, .. } => write!(f, "{term}"),
+            Constraint::Cmp { guard, .. } | Constraint::Identity { guard, .. } => guard.clone(),
+        }
+    }
+
+    /// Get the guard for the constraint as a reference
+    fn get_guard_ref(&self) -> Option<&Handle<Predicate>> {
+        match self {
+            Constraint::Cmp { guard, .. } | Constraint::Identity { guard, .. } => guard.as_ref(),
         }
     }
 }
 
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(strum_macros::Display, Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(
+    strum_macros::Display,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    strum_macros::EnumIs,
+    strum_macros::EnumTryAs,
+    strum_macros::AsRefStr,
+)]
 pub enum Predicate {
     // Conjunction of two predicates, e.g. x && y
     #[strum(to_string = "({0}) && ({1})")]
@@ -394,6 +626,108 @@ pub enum Predicate {
     /// The literal True predicate.
     #[strum(to_string = "true")]
     True,
+}
+
+impl Predicate {
+    /// Get a handle to the true predicate.
+    pub(crate) fn mk_true() -> Handle<Self> {
+        lazy_static! {
+            static ref TRUE: Handle<Predicate> = Predicate::True.into();
+        }
+        TRUE.clone()
+    }
+
+    #[allow(dead_code)] // This might be used in the future...
+    /// Get a handle to the false predicate.
+    pub(crate) fn mk_false() -> Handle<Self> {
+        lazy_static! {
+            static ref FALSE: Handle<Predicate> = Predicate::False.into();
+        }
+        FALSE.clone()
+    }
+
+    /// Return a set consisting of the child predicates, in `Handle` form, of this `And` or `Or` predicate in the conjunction / disjunction.
+    /// For example, if `self` is `(a && b)` && (`c` && `d`), this returns `{a, b, c, d}`
+    pub(crate) fn get_children_set_handles(&self) -> FastHashSet<Handle<Predicate>> {
+        fn iter_and_terms(term: &Handle<Predicate>, terms: &mut FastHashSet<Handle<Predicate>>) {
+            if let Predicate::And(a, b) = term.as_ref() {
+                iter_and_terms(a, terms);
+                iter_and_terms(b, terms);
+            } else {
+                terms.insert(term.clone());
+            }
+        }
+        fn iter_or_terms(term: &Handle<Predicate>, terms: &mut FastHashSet<Handle<Predicate>>) {
+            if let Predicate::Or(a, b) = term.as_ref() {
+                iter_or_terms(a, terms);
+                iter_or_terms(b, terms);
+            } else {
+                terms.insert(term.clone());
+            }
+        }
+        let mut terms = FastHashSet::default();
+        match self {
+            Predicate::And(a, b) => {
+                iter_and_terms(a, &mut terms);
+                iter_and_terms(b, &mut terms);
+            }
+            Predicate::Or(a, b) => {
+                iter_or_terms(a, &mut terms);
+                iter_or_terms(b, &mut terms);
+            }
+            _ => (),
+        };
+
+        terms
+    }
+
+    /// Return a set consisting of the child predicates of this `And` or `Or` predicate in the conjunction / disjunction.
+    /// For example, if `self` is `(a && b)` && (`c` && `d`), this returns `{a, b, c, d}`
+    pub(crate) fn get_children_set(&self) -> FastHashSet<&Predicate> {
+        fn iter_and_terms<'a>(term: &'a Handle<Predicate>, terms: &mut FastHashSet<&'a Predicate>) {
+            if let Predicate::And(a, b) = term.as_ref() {
+                iter_and_terms(a, terms);
+                iter_and_terms(b, terms);
+            } else {
+                terms.insert(term.borrow());
+            }
+        }
+        fn iter_or_terms<'a>(term: &'a Handle<Predicate>, terms: &mut FastHashSet<&'a Predicate>) {
+            if let Predicate::Or(a, b) = term.as_ref() {
+                iter_or_terms(a, terms);
+                iter_or_terms(b, terms);
+            } else {
+                terms.insert(term.borrow());
+            }
+        }
+        let mut terms = FastHashSet::default();
+        match self {
+            Predicate::And(a, b) => {
+                iter_and_terms(a, &mut terms);
+                iter_and_terms(b, &mut terms);
+            }
+            Predicate::Or(a, b) => {
+                iter_or_terms(a, &mut terms);
+                iter_or_terms(b, &mut terms);
+            }
+            _ => (),
+        };
+
+        terms
+    }
+}
+
+impl AsRef<Predicate> for Predicate {
+    fn as_ref(&self) -> &Predicate {
+        self
+    }
+}
+
+impl Predicate {
+    /// Constant `FALSE` predicate.
+    pub const FALSE: Predicate = Predicate::False;
+    /// Constant `TRUE` predicate.
+    pub const TRUE: Predicate = Predicate::True;
 }
 
 impl From<bool> for Predicate {
@@ -455,16 +789,37 @@ impl From<&Term> for Predicate {
 }
 
 impl Predicate {
+    /// Constructs a new `And` term from two Predicates.
     pub fn new_and<T, U>(lhs: T, rhs: U) -> Handle<Self>
     where
         T: Into<Handle<Self>>,
         U: Into<Handle<Self>>,
     {
         let (lhs, rhs) = (lhs.into(), rhs.into());
+
+        // Check if the `rhs` is something like (a && b && c && d && e) ..
+        // In which case, if `a` is equal to any of the terms, we
+        // can just return the `rhs`.
+        // That is, we always keep our terms in simplified form.
+        // We continually loop while the current term is `And`.
+
         match (lhs.as_ref(), rhs.as_ref()) {
+            (a, b) if a == b => a.clone().into(),
             (Predicate::True, _) => rhs,
             (_, Predicate::True) => lhs,
             (Predicate::False, _) | (_, Predicate::False) => Predicate::False.into(),
+            (Predicate::And(a, b), Predicate::And(c, d)) => {
+                if b == c || b == d {
+                    Predicate::And(a.clone(), rhs).into()
+                } else if a == c || a == d {
+                    Predicate::And(b.clone(), rhs).into()
+                } else {
+                    // `And` terms are always normalized.
+                    // That is, we never want to have (a && b) && (c && d).
+                    // We only ever have a && (b && (c && d)).
+                    Predicate::And(a.clone(), Self::new_and(b.clone(), rhs)).into()
+                }
+            }
             _ => Predicate::And(lhs, rhs).into(),
         }
     }
@@ -476,12 +831,33 @@ impl Predicate {
     {
         let (lhs, rhs) = (lhs.into(), rhs.into());
         match (lhs.as_ref(), rhs.as_ref()) {
+            // a `or` a is the same as just `a`.
             (Predicate::False, _) => rhs,
             (_, Predicate::False) => lhs,
             (Predicate::True, _) | (_, Predicate::True) => Predicate::True.into(),
+            (a, b) if a == b => a.clone().into(),
+            (Predicate::Or(a, b), Predicate::Or(c, d)) => {
+                if b == c || b == d {
+                    Predicate::new_or(a.clone(), rhs)
+                } else if a == c || a == d {
+                    Predicate::new_or(b.clone(), rhs)
+                } else {
+                    Predicate::new_or(a.clone(), Self::new_or(b.clone(), rhs))
+                }
+            }
             _ => Predicate::Or(lhs, rhs).into(),
         }
     }
+
+    /// Make a new `Not` predicate.
+    ///
+    /// Note that this constructor always simplifies its arguments,
+    /// applying de Morgan's laws to convert `!And(a, b)` to `Or(!a, !b)` and `!Or(a, b)` to `And(!a, !b)`.
+    ///
+    /// It also reverses the comparison operator. That means that this
+    /// function is not safe to use for floating point terms, as
+    /// Not(a < b) is going to be converted to a >= b, which would be violated
+    /// for NaN comparisons.
     pub fn new_not<T>(pred: T) -> Handle<Self>
     where
         T: Into<Handle<Self>>,
@@ -494,13 +870,47 @@ impl Predicate {
             Predicate::Comparison(op, l, r) => {
                 Predicate::Comparison(op.negation(), l.clone(), r.clone()).into()
             }
-            _ => Predicate::Not(pred).into(),
+            Predicate::And(a, b) => {
+                Predicate::new_or(Self::new_not(a.clone()), Self::new_not(b.clone()))
+            }
+            Predicate::Or(a, b) => {
+                Predicate::new_and(Self::new_not(a.clone()), Self::new_not(b.clone()))
+            }
+            Predicate::Unit(_) => Predicate::Not(pred).into(),
         }
     }
 
+    /// Constructs a new comparison predicate.
+    ///
+    /// This constructor will eagerly evaluate the comparison of scalars.
     #[must_use]
     pub fn new_comparison(op: CmpOp, lhs: &Term, rhs: &Term) -> Self {
-        Predicate::Comparison(op, lhs.clone(), rhs.clone())
+        use std::cmp::Ordering;
+        // If this is a scalar....
+        let ordering = match (lhs, rhs) {
+            (Term::Literal(Literal::F32(a)), Term::Literal(Literal::F32(b))) => {
+                match a.partial_cmp(b) {
+                    Some(ordering) => ordering,
+                    None => return (op == CmpOp::Neq).into(),
+                }
+            }
+            (Term::Literal(Literal::I32(a)), Term::Literal(Literal::I32(b))) => a.cmp(b),
+            (Term::Literal(Literal::U32(a)), Term::Literal(Literal::U32(b))) => a.cmp(b),
+            (Term::Literal(Literal::I64(a)), Term::Literal(Literal::I64(b))) => a.cmp(b),
+            _ => {
+                return Predicate::Comparison(op, lhs.clone(), rhs.clone());
+            }
+        };
+
+        // We do scalar evaluation here.
+
+        match (ordering, op) {
+            (Ordering::Equal, CmpOp::Eq | CmpOp::Leq | CmpOp::Geq)
+            | (Ordering::Less, CmpOp::Lt | CmpOp::Leq)
+            | (Ordering::Greater, CmpOp::Gt | CmpOp::Geq)
+            | (Ordering::Less | Ordering::Greater, CmpOp::Neq) => Predicate::True,
+            _ => Predicate::False,
+        }
     }
 
     pub fn new_unit<T: Into<Term>>(var: T) -> Handle<Self> {
@@ -516,7 +926,7 @@ impl Predicate {
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, strum_macros::EnumIs)]
 pub enum AbcExpression {
     /// A Vector is a homogenous collection of terms.
     ///
@@ -543,12 +953,17 @@ pub enum AbcExpression {
     /// A binary operator, e.g., x + y
     BinaryOp(BinaryOp, Term, Term),
     /// A select expression, e.g., select(x, y, z)
+    ///
+    /// This is of the form `Select(cond, iftrue, iffalse)`
     Select(Term, Term, Term),
 
     /// Splat, aka a vector with the same value repeated n times.
     Splat(Term, u32),
     /// The expression for the length of an array, e.g., ArrayLength(x)
     ArrayLength(Term),
+
+    /// The expression for the length of a specific dimension of an array, e.g., (ArrayLength(x, 1)) or (ArrayLength(x, 2))
+    ArrayLengthDim(Term, std::num::NonZeroU8),
 
     /// Cast a term to a scalar type, e.g. `i32(x)`
     Cast(Term, AbcScalar),
@@ -558,6 +973,7 @@ pub enum AbcExpression {
         base: Term,
         ty: Handle<AbcType>,
         fieldname: String,
+        field_idx: usize,
     },
 
     /// Access an element of an array, e.g. `x[3]`
@@ -567,7 +983,6 @@ pub enum AbcExpression {
     ///
     /// A store resolves to a copy of the base array, by value,
     /// with the value at the index replaced by the new value.
-    /// This allows the domain of the
     Store {
         base: Term,
         index: Term,
@@ -598,9 +1013,68 @@ pub enum AbcExpression {
     Dot(Term, Term),
 }
 
+impl AbcExpression {
+    pub const fn variant_name(&self) -> &'static str {
+        use AbcExpression::{
+            Abs, ArrayLength, ArrayLengthDim, BinaryOp, Cast, Dot, FieldAccess, IndexAccess,
+            Matrix, Max, Min, Pow, Select, Splat, Store, StructStore, UnaryOp, Vector,
+        };
+        match *self {
+            Vector { .. } => "Vector",
+            Matrix { .. } => "Matrix",
+            UnaryOp(..) => "UnaryOp",
+            BinaryOp(..) => "BinaryOp",
+            Select(..) => "Select",
+            Splat(..) => "Splat",
+            ArrayLength(..) => "ArrayLength",
+            ArrayLengthDim(..) => "ArrayLengthDim",
+            Cast(..) => "Cast",
+            FieldAccess { .. } => "FieldAccess",
+            IndexAccess { .. } => "IndexAccess",
+            Store { .. } => "Store",
+            StructStore { .. } => "StructStore",
+            Max(..) => "Max",
+            Min(..) => "Min",
+            Abs(..) => "Abs",
+            Pow { .. } => "Pow",
+            Dot(..) => "Dot",
+        }
+    }
+    /// Assuming that `self` is a series of index accesses,
+    /// return the base term being indexed into and the 1-based nest level of the access.
+    ///
+    /// E.g., if this is `x[0][1][2]`, this will return `(x, 3)`.
+    /// If this is not an index access, returns `None`.
+    ///
+    /// This will also return `None` if the nest level exceeds `u8::MAX`.
+    pub fn get_index_and_nest(&self) -> Option<(&Term, u8)> {
+        if !self.is_index_access() {
+            return None;
+        }
+
+        let mut nest_level = 1;
+        // Increment nest level as long as base is an index access.
+        let mut curr = self;
+        while let Self::IndexAccess {
+            base: term @ Term::Expr(base),
+            ..
+        } = curr
+        {
+            curr = base.as_ref();
+            if !curr.is_index_access() {
+                return Some((term, nest_level));
+            }
+            nest_level = nest_level.checked_add(1u8)?;
+        }
+
+        None
+    }
+}
+
 macro_rules! expression_sub {
     ($self:ident, $name:ident, ($($args:expr),*)) => {
         match $self {
+            Self::ArrayLengthDim(t, dim) => Self::ArrayLengthDim(t.$name($($args),*), *dim),
             Self::Vector{components, ty} => Self::Vector {
                 components: components.iter().map(|t| t.$name($($args),*)).collect(),
                 ty: *ty
@@ -619,10 +1093,12 @@ macro_rules! expression_sub {
                 base,
                 ty,
                 fieldname,
+                field_idx,
             } => Self::FieldAccess {
                 base: base.$name($($args),*),
                 ty: ty.clone(),
                 fieldname: fieldname.clone(),
+                field_idx: *field_idx,
             },
 
             Self::Splat(t, v) => Self::Splat(t.$name($($args),*), *v),
@@ -728,11 +1204,11 @@ impl std::fmt::Display for AbcExpression {
         match self {
             Self::Splat(expr, size) => {
                 f.write_char('<')?;
-                f.write_str(&expr.to_string())?;
-                f.write_str(&expr.to_string())?;
+                f.write_str(expr.as_ref())?;
+                f.write_str(expr.as_ref())?;
                 for _ in 1..*size {
                     f.write_str(", ")?;
-                    f.write_str(&expr.to_string())?;
+                    f.write_str(expr.as_ref())?;
                 }
                 f.write_char('>')
             }
@@ -742,13 +1218,16 @@ impl std::fmt::Display for AbcExpression {
                     f.write_str("< >")
                 } else {
                     f.write_str("")?;
-                    f.write_str(&components.first().unwrap().to_string())?;
+                    f.write_str(components.first().unwrap().as_ref())?;
                     for term in components.get(1..).unwrap_or_default() {
                         f.write_str(", ")?;
-                        f.write_str(&term.to_string())?;
+                        f.write_str(term.as_ref())?;
                     }
                     f.write_char('>')
                 }
+            }
+            Self::ArrayLengthDim(t, dim) => {
+                write!(f, "length({t}, dim={dim})")
             }
             Self::BinaryOp(op, lhs, rhs) => write!(f, "{lhs} {op} {rhs}"),
             Self::Select(pred, then_expr, else_expr) => {
@@ -827,7 +1306,7 @@ where
 /// Provides an interface to define a type in the constraint system.
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, strum_macros::EnumIs)]
 pub enum AbcType {
     // A user defined compound type.
     Struct {
@@ -852,6 +1331,98 @@ pub enum AbcType {
     ///
     /// Currently used as the type of variables that cannot be used, but whose expressions are needed
     NoneType,
+}
+
+impl AbcType {
+    /// Create a handle to a new `u32` type.
+    pub fn mk_u32() -> Handle<AbcType> {
+        lazy_static! {
+            static ref AbcType_U32: Handle<AbcType> = Arc::new(AbcType::Scalar(AbcScalar::U32));
+        }
+        AbcType_U32.clone()
+    }
+
+    /// Create a handle to a new `i32` type.
+    pub fn mk_i32() -> Handle<AbcType> {
+        lazy_static! {
+            static ref AbcType_I32: Handle<AbcType> = Arc::new(AbcType::Scalar(AbcScalar::I32));
+        }
+        AbcType_I32.clone()
+    }
+
+    /// Create a handle to a new `u64` type.
+    pub fn mk_u64() -> Handle<AbcType> {
+        lazy_static! {
+            static ref AbcType_U64: Handle<AbcType> = Arc::new(AbcType::Scalar(AbcScalar::U64));
+        }
+        AbcType_U64.clone()
+    }
+
+    /// Create a handle to a new `i64` type.
+    pub fn mk_i64() -> Handle<AbcType> {
+        lazy_static! {
+            static ref AbcType_I64: Handle<AbcType> = Arc::new(AbcType::Scalar(AbcScalar::I64));
+        }
+        AbcType_I64.clone()
+    }
+
+    /// Create a handle to a new `u16` type.
+    pub fn mk_u16() -> Handle<AbcType> {
+        lazy_static! {
+            static ref AbcType_U16: Handle<AbcType> = Arc::new(AbcType::Scalar(AbcScalar::U16));
+        }
+        AbcType_U16.clone()
+    }
+
+    pub fn mk_i16() -> Handle<AbcType> {
+        lazy_static! {
+            static ref AbcType_I16: Handle<AbcType> = Arc::new(AbcType::Scalar(AbcScalar::I16));
+        }
+        AbcType_I16.clone()
+    }
+
+    pub fn mk_f32() -> Handle<AbcType> {
+        lazy_static! {
+            static ref AbcType_F32: Handle<AbcType> =
+                Arc::new(AbcType::Scalar(AbcScalar::Float(4)));
+        }
+        AbcType_F32.clone()
+    }
+
+    pub fn mk_f64() -> Handle<AbcType> {
+        lazy_static! {
+            static ref AbcType_F64: Handle<AbcType> =
+                Arc::new(AbcType::Scalar(AbcScalar::Float(8)));
+        }
+        AbcType_F64.clone()
+    }
+
+    pub const fn variant_name(&self) -> &'static str {
+        match self {
+            AbcType::Struct { .. } => "Struct",
+            AbcType::SizedArray { .. } => "SizedArray",
+            AbcType::DynamicArray { .. } => "DynamicArray",
+            AbcType::Scalar(..) => "Scalar",
+            AbcType::NoneType => "NoneType",
+        }
+    }
+
+    /// Get the nested type from the given depth.
+    /// If this is not a `SizedArray` or `Array`, then this will return `None`.
+    pub fn get_nested_type(&self, depth: u8) -> Option<&Handle<AbcType>> {
+        let mut curr_ty: &AbcType = self;
+        for _ in 0..depth {
+            curr_ty = match curr_ty {
+                AbcType::SizedArray { ty, .. } | AbcType::DynamicArray { ty } => ty.as_ref(),
+                _ => return None,
+            }
+        }
+
+        match curr_ty {
+            AbcType::SizedArray { ty, .. } | AbcType::DynamicArray { ty } => Some(ty),
+            _ => None,
+        }
+    }
 }
 
 impl From<AbcScalar> for AbcType {
@@ -895,10 +1466,6 @@ where
 }
 
 impl AbcType {
-    pub fn is_none_type(&self) -> bool {
-        matches!(self, AbcType::NoneType)
-    }
-
     pub fn new_struct(members: Vec<StructField>) -> Self {
         AbcType::Struct { members }
     }
@@ -947,33 +1514,26 @@ pub enum AbcScalar {
     AbstractFloat,
 }
 
+impl AbcScalar {
+    /// Convenience alias for a 32-bit unsigned integer.
+    pub const U32: AbcScalar = AbcScalar::Uint(4);
+    /// Convenience alias for a 32-bit signed integer.
+    pub const I32: AbcScalar = AbcScalar::Sint(4);
+    /// Convenience alias for a 64-bit unsigned integer.
+    pub const U64: AbcScalar = AbcScalar::Uint(8);
+    /// Convenience alias for a 64-bit signed integer.
+    pub const I64: AbcScalar = AbcScalar::Sint(8);
+    /// Convenience alias for a 16-bit unsigned integer.
+    pub const U16: AbcScalar = AbcScalar::Uint(2);
+    /// Convenience alias for a 16-bit signed integer.
+    pub const I16: AbcScalar = AbcScalar::Sint(2);
+    /// Convenience alias for a 32-bit floating point number.
+    pub const F32: AbcScalar = AbcScalar::Float(4);
+    /// Convenience alias for a 64-bit floating point number.
+    pub const F64: AbcScalar = AbcScalar::Float(8);
+}
+
 // Aliases for common types.
-
-/// Convenience alias for a 32-bit unsigned integer.
-pub const ABC_U32_SCALAR: AbcScalar = AbcScalar::Uint(4);
-/// Convenience alias for a 32-bit signed integer.
-pub const ABC_I32_SCALAR: AbcScalar = AbcScalar::Sint(4);
-/// Convenience alias for a 64-bit unsigned integer.
-pub const ABC_U64_SCALAR: AbcScalar = AbcScalar::Uint(8);
-/// Convenience alias for a 64-bit signed integer.
-pub const ABC_I64_SCALAR: AbcScalar = AbcScalar::Sint(8);
-/// Convenience alias for a 16-bit unsigned integer.
-pub const ABC_U16_SCALAR: AbcScalar = AbcScalar::Uint(2);
-/// Convenience alias for a 16-bit signed integer.
-pub const ABC_I16_SCALAR: AbcScalar = AbcScalar::Sint(2);
-/// Convenience alias for a 32-bit floating point number.
-pub const ABC_F32_SCALAR: AbcScalar = AbcScalar::Float(4);
-/// Convenience alias for a 64-bit floating point number.
-pub const ABC_F64_SCALAR: AbcScalar = AbcScalar::Float(8);
-
-pub const ABC_U32_TY: AbcType = AbcType::Scalar(ABC_U32_SCALAR);
-pub const ABC_I32_TY: AbcType = AbcType::Scalar(ABC_I32_SCALAR);
-pub const ABC_U64_TY: AbcType = AbcType::Scalar(ABC_U64_SCALAR);
-pub const ABC_I64_TY: AbcType = AbcType::Scalar(ABC_I64_SCALAR);
-pub const ABC_U16_TY: AbcType = AbcType::Scalar(ABC_U16_SCALAR);
-pub const ABC_I16_TY: AbcType = AbcType::Scalar(ABC_I16_SCALAR);
-pub const ABC_F32_TY: AbcType = AbcType::Scalar(ABC_F32_SCALAR);
-pub const ABC_F64_TY: AbcType = AbcType::Scalar(ABC_F64_SCALAR);
 
 impl std::fmt::Display for AbcScalar {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -1007,7 +1567,7 @@ pub struct Summary {
     /// They mark things like assignment
     ///
     /// These encode information such as variable assignments.
-    pub assumptions: Vec<Constraint>,
+    pub assumptions: FastHashMap<Term, Assumption>,
 }
 
 /// Displaying a Summary just shows the name of the function.
@@ -1016,6 +1576,26 @@ impl std::fmt::Display for Summary {
         f.write_str(&self.name)
     }
 }
+
+/// Expands to a macro that merges the assumption into the map, returning whether
+/// or not the merge was possible.
+macro_rules! add_assumption_impl {
+    ($map:expr, $assumption:expr $(,)?) => {{
+        use std::collections::hash_map::Entry;
+        let lhs = $assumption.get_lhs();
+        match $map.entry(lhs.clone()) {
+            Entry::Occupied(mut entry) => {
+                // If this assumption exists, then we merge it with other if possible.
+                entry.get_mut().merge(&$assumption)
+            }
+            Entry::Vacant(entry) => {
+                entry.insert($assumption);
+                true
+            }
+        }
+    }};
+}
+pub(crate) use add_assumption_impl;
 
 impl Summary {
     /// Return the number of arguments the function takes.
@@ -1033,7 +1613,7 @@ impl Summary {
             args: Vec::with_capacity(nargs as usize),
             constraints: Vec::new(),
             return_type: NONETYPE.clone(),
-            assumptions: Vec::new(),
+            assumptions: FastHashMap::default(),
             ret_term: Term::Empty,
         }
     }
@@ -1049,8 +1629,9 @@ impl Summary {
     }
 
     /// Add an assumption to the summary.
-    pub fn add_assumption(&mut self, assumption: &Constraint) {
-        self.assumptions.push(assumption.clone());
+    #[inline]
+    pub fn add_assumption(&mut self, assumption: Assumption) -> bool {
+        add_assumption_impl!(self.assumptions, assumption)
     }
 }
 
@@ -1067,13 +1648,13 @@ lazy_static! {
 ///
 /// [`Predicate::True`]: crate::Predicate::True
 /// [`Predicate::False`]: crate::Predicate::False
-#[derive(Debug, Clone, Copy, PartialOrd, strum_macros::Display)]
+#[derive(Debug, Clone, Copy, PartialOrd, strum_macros::Display, strum_macros::EnumIs)]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum Literal {
     #[strum(to_string = "{0}")]
-    /// May not be NaN or infinity.
+    /// May not be NaN or infinity, as defined by the wgsl spec..
     F64(f64),
     #[strum(to_string = "{0}")]
     F32(f32),
@@ -1089,6 +1670,45 @@ pub enum Literal {
     AbstractInt(i64),
     #[strum(to_string = "{0}")]
     AbstractFloat(f64),
+}
+
+impl Literal {
+    pub fn get_scalar_kind(&self) -> AbcScalar {
+        match self {
+            Self::F64(_) | Self::AbstractFloat(_) => AbcScalar::F64,
+            Self::F32(_) => AbcScalar::F32,
+            Self::U32(_) => AbcScalar::U32,
+            Self::I32(_) | Self::AbstractInt(_) => AbcScalar::I32,
+            Self::U64(_) => AbcScalar::U64,
+            Self::I64(_) => AbcScalar::I64,
+        }
+    }
+
+    pub fn get_type(&self) -> Handle<AbcType> {
+        match self {
+            Self::F64(_) | Self::AbstractFloat(_) => AbcType::mk_f64(),
+            Self::F32(_) => AbcType::mk_f32(),
+            Self::U32(_) => AbcType::mk_u32(),
+            Self::I32(_) | Self::AbstractInt(_) => AbcType::mk_i32(),
+            Self::U64(_) => AbcType::mk_u64(),
+            Self::I64(_) => AbcType::mk_i64(),
+        }
+    }
+}
+
+impl Literal {
+    pub const fn variant_name(&self) -> &'static str {
+        match self {
+            Self::F64(_) => "F64",
+            Self::F32(_) => "F32",
+            Self::U32(_) => "U32",
+            Self::I32(_) => "I32",
+            Self::U64(_) => "U64",
+            Self::I64(_) => "I64",
+            Self::AbstractInt(_) => "AbstractInt",
+            Self::AbstractFloat(_) => "AbstractFloat",
+        }
+    }
 }
 
 impl PartialEq for Literal {
@@ -1186,9 +1806,21 @@ impl From<std::num::NonZeroI16> for Literal {
 /// for both to be used interchangably.
 ///
 /// It also simplifies the logic for storing references to variables.
+///
+/// Note that cloning `Term` is quite cheap, as all of its members either store Arcs or are extremely small.
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Clone, Debug, strum_macros::Display, PartialEq, Eq, Hash)]
+#[derive(
+    Clone,
+    Debug,
+    strum_macros::Display,
+    PartialEq,
+    Eq,
+    Hash,
+    strum_macros::EnumIs,
+    strum_macros::EnumTryAs,
+    strum_macros::AsRefStr,
+)]
 #[cfg_attr(feature = "cffi", repr(C))]
 pub enum Term {
     #[strum(to_string = "{0}")]
@@ -1204,10 +1836,45 @@ pub enum Term {
 }
 
 impl Term {
-    /// Return whether this is the empty term.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        matches!(self, Term::Empty)
+    /// Get a reference to the contained expression, otherwise return `None`
+    pub const fn try_get_expr(&self) -> Option<&Handle<AbcExpression>> {
+        match self {
+            Self::Expr(expr) => Some(expr),
+            _ => None,
+        }
+    }
+
+    /// Get a reference to the contained literal, otherwise return `None`
+    pub const fn try_get_literal(&self) -> Option<&Literal> {
+        match self {
+            Self::Literal(lit) => Some(lit),
+            _ => None,
+        }
+    }
+
+    /// Get a reference to the contained predicate, otherwise return `None`
+    pub const fn try_get_predicate(&self) -> Option<&Handle<Predicate>> {
+        match self {
+            Self::Predicate(pred) => Some(pred),
+            _ => None,
+        }
+    }
+
+    /// Get a reference to the contained variable, otherwise return `None`
+    pub const fn try_get_var(&self) -> Option<&Handle<Var>> {
+        match self {
+            Self::Var(var) => Some(var),
+            _ => None,
+        }
+    }
+    pub const fn variant_name(&self) -> &'static str {
+        match self {
+            Self::Expr(_) => "Expr",
+            Self::Var(_) => "Var",
+            Self::Literal(_) => "Literal",
+            Self::Predicate(_) => "Predicate",
+            Self::Empty => "Empty",
+        }
     }
     /// Determine whether `self` and `with` have identical structure and references.
     ///
@@ -1219,6 +1886,23 @@ impl Term {
             (Self::Predicate(a), Self::Predicate(b)) => Arc::ptr_eq(a, b),
             (Self::Literal(a), Self::Literal(b)) => a == b,
             (Self::Empty, Self::Empty) => true,
+            _ => false,
+        }
+    }
+
+    /// If `term` is an expression, gets the nest level.
+    #[inline]
+    pub fn get_index_and_nest_level(&self) -> Option<(&Term, u8)> {
+        match self {
+            Self::Expr(expr) => expr.get_index_and_nest(),
+            _ => None,
+        }
+    }
+
+    /// Return whether `term` is an array length or array length dim expression.
+    fn is_array_length_like(&self) -> bool {
+        match self {
+            Self::Expr(expr) => expr.is_array_length() || expr.is_array_length_dim(),
             _ => false,
         }
     }
@@ -1376,12 +2060,15 @@ impl Term {
 
     /// Creates a new field access expression
     #[must_use]
-    pub fn new_struct_access(base: &Term, fieldname: String, ty: Handle<AbcType>) -> Self {
+    pub fn new_struct_access(
+        base: &Term, fieldname: String, ty: Handle<AbcType>, field_idx: usize,
+    ) -> Self {
         Term::Expr(
             AbcExpression::FieldAccess {
                 base: base.clone(),
                 fieldname,
                 ty,
+                field_idx,
             }
             .into(),
         )
@@ -1438,11 +2125,18 @@ impl Term {
     }
 
     #[must_use]
+    #[inline]
     pub fn make_array_length(var: &Term) -> Self {
         AbcExpression::ArrayLength(var.clone()).into()
     }
 
     #[must_use]
+    pub fn make_array_length_dim(var: &Term, dim: std::num::NonZeroU8) -> Self {
+        AbcExpression::ArrayLengthDim(var.clone(), dim).into()
+    }
+
+    #[must_use]
+    #[inline]
     pub fn new_store(base: Term, index: Term, value: Term) -> Self {
         AbcExpression::Store { base, index, value }.into()
     }
@@ -1460,12 +2154,21 @@ impl Term {
     }
 
     #[must_use]
+    #[inline]
     pub fn new_abs(term: &Term) -> Self {
+        // Multiple `abs` on the exact same term are stripped.
+        if let Term::Expr(ref t) = *term {
+            if t.as_ref().is_abs() {
+                return term.clone();
+            }
+        }
         Term::Expr(AbcExpression::Abs(term.clone()).into())
     }
 
+    /// Construct a new `max` expression.
     #[must_use]
     pub fn new_max(a: &Term, b: &Term) -> Self {
+        // `Max` on two literals is evaluated.
         Term::Expr(AbcExpression::Max(a.clone(), b.clone()).into())
     }
 
@@ -1605,7 +2308,7 @@ mod test {
     #[rstest]
     fn test_term_new_logical_and(var_x: Term) {
         let term = Term::new_logical_and(&var_x, &var_x);
-        assert_eq!(term.to_string(), "(x) && (x)");
+        assert_eq!(term.to_string(), "x");
     }
 
     /// Ensure `true` or x = x
@@ -1661,7 +2364,7 @@ mod test {
     fn test_term_new_struct_access() {
         let base = Term::new_var(Var::from("obj"));
         let ty = Arc::new(AbcType::NoneType);
-        let term = Term::new_struct_access(&base, "field".to_string(), ty);
+        let term = Term::new_struct_access(&base, "field".to_string(), ty, 0);
         assert_eq!(term.to_string(), "obj.field");
     }
 

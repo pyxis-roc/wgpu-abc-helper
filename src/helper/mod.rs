@@ -84,6 +84,7 @@ mod visitor {
                 // Expressions with one child term
                 E::Splat(ref t, _)
                 | E::ArrayLength(ref t)
+                | E::ArrayLengthDim(ref t, _)
                 | E::Cast(ref t, _)
                 | E::FieldAccess { base: ref t, .. }
                 | E::UnaryOp(_, ref t)

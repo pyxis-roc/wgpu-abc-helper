@@ -10,22 +10,25 @@ OR in the form of \[start:end:update\]
 Given this, we identify the range that each value can hold for any constraint
 Predicates filter the possible domain that variables can hold for a statement.
 */
-
+#![allow(clippy::module_name_repetitions)]
 mod solver;
-// mod translator;
+pub(crate) mod translator;
 
-mod private;
-pub(super) use private::CompoundInterval;
+#[cfg(feature = "deserialize")]
+use serde::Deserialize;
+#[cfg(feature = "serialize")]
+use serde::Serialize;
+
+mod compound;
+pub(super) use compound::CompoundInterval;
 
 use core::ops::{Range, RangeInclusive};
-use std::ops::{BitAnd, Bound, RangeBounds};
+use std::ops::{Bound, RangeBounds};
 
 pub mod ops;
-use ops::{
-    Intersect, IntersectAssign, IntervalAdd, IntervalMax, IntervalMin, IntervalMul, IntervalNeg,
-    IntervalSub, Union,
-};
-// pub use translator::translate;
+use ops::{Intersect, IntersectAssign, IntervalMax, IntervalMin, Union};
+
+pub use translator::SolverError;
 
 use crate::FastHashSet;
 
@@ -69,24 +72,53 @@ impl<T> IntervalBoundary for T where
 {
 }
 
+impl crate::Literal {
+    #[inline]
+    #[must_use]
+    pub const fn is_min(&self) -> bool {
+        match *self {
+            Self::U32(v) => v == u32::MIN,
+            Self::I32(v) => v == i32::MIN,
+            Self::U64(v) => v == u64::MIN,
+            Self::I64(v) | Self::AbstractInt(v) => v == i64::MIN,
+            // We don't check min for float types...
+            _ => false,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_max(&self) -> bool {
+        match *self {
+            Self::U32(v) => v == u32::MAX,
+            Self::I32(v) => v == i32::MAX,
+            Self::U64(v) => v == u64::MAX,
+            Self::I64(v) | Self::AbstractInt(v) => v == i64::MAX,
+            // We don't check max for float types...
+            _ => false,
+        }
+    }
+}
+
 /// A trait indicating that the type operates like an interval.
-pub trait Interval<T: IntervalBoundary>: Clone + PartialEq {
+pub trait Interval {
+    type Inner: IntervalBoundary;
     /// Return whether the interval contains any values.
     fn is_empty(&self) -> bool;
     /// If this interval is unit over a single value, return `Some(value)`.  Otherwise, returns `None`
-    fn as_literal(&self) -> Option<T>;
+    fn as_literal(&self) -> Option<Self::Inner>;
 
     /// Return a tuple of the form (value, `is_empty`).
     ///
     /// If `is_empty` is true, then `value` is meaningless.
     /// Otherwise, this represents the lowest value in the interval.
-    fn get_lower(&self) -> (T, bool);
+    fn get_lower(&self) -> (Self::Inner, bool);
 
     /// Return a tuple of the form (value, `is_empty`).
     ///
     /// If `is_empty` is true, then `value` is meaningless.
     /// Otherwise, this represents the greatest value in the interval.
-    fn get_upper(&self) -> (T, bool);
+    fn get_upper(&self) -> (Self::Inner, bool);
 
     /// Return whether the other interval is a subset of this interval.
     fn subsumes(&self, other: &Self) -> bool;
@@ -95,13 +127,13 @@ pub trait Interval<T: IntervalBoundary>: Clone + PartialEq {
     fn is_top(&self) -> bool;
 
     /// Return whether the interval contains `value`
-    fn has_value(&self, value: T) -> bool;
+    fn has_value(&self, value: Self::Inner) -> bool;
 
     /// Return the `top` interval for this type.
     fn top() -> Self;
 
     /// Create a new interval from the two values.
-    fn from_literals(lower: T, upper: T) -> Self;
+    fn from_literals(lower: Self::Inner, upper: Self::Inner) -> Self;
 }
 
 impl<T: IntervalBoundary> RangeBounds<T> for BasicInterval<T> {
@@ -122,20 +154,26 @@ impl<T: IntervalBoundary> RangeBounds<T> for BasicInterval<T> {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[cfg_attr(feature = "serialize", derive(Serialize))]
+#[cfg_attr(feature = "deserialize", derive(Deserialize))]
+#[derive(Debug, thiserror::Error, Clone)]
 pub enum IntervalError {
     #[error("Incompatible types")]
     IncompatibleTypes,
+    #[error("{0} is not supported for intervals of type {1}")]
+    InvalidOp(&'static str, &'static str),
+    #[error("{0} is not supported between {1} and {2}")]
+    InvalidBinOp(&'static str, &'static str, &'static str),
 }
 
-/// Version 1 of an interval: A single interval that is not a union of other intervals.
-
-#[derive(Clone, Copy, Debug, Eq)]
+/// An interval that represents all values between two bounds, inclusive.
+///
+/// The interval is considered empty if the lower bound is greater than the upper bound.
+#[derive(Clone, Copy, Debug)]
 pub struct BasicInterval<T: IntervalBoundary> {
     lower: T,
     upper: T,
 }
-
 impl<T: IntervalBoundary> BasicInterval<T> {
     pub const fn new(lower: T, upper: T) -> Self {
         Self { lower, upper }
@@ -167,11 +205,84 @@ impl<T: IntervalBoundary> std::hash::Hash for BasicInterval<T> {
 
 impl<T: IntervalBoundary> std::cmp::PartialEq for BasicInterval<T> {
     /// Two basic intervals are equal to each other if they are both empty, or if their bounds are identical.
+    ///
+    /// ```
+    /// # use abc_helper::solvers::interval::BasicInterval;
+    /// let a = BasicInterval::new(10, 20);
+    /// let b = BasicInterval::new(10, 20);
+    /// assert_eq!(a, b);
+    ///
+    /// let a = BasicInterval::new(15, 10); // An empty interval
+    /// let b = BasicInterval::new(40, 20); // Also an empty interval,
+    /// assert_eq!(a, b);
+    /// ```
     fn eq(&self, other: &Self) -> bool {
         if self.is_empty() && other.is_empty() {
             other.is_empty()
         } else {
             self.lower == other.lower && self.upper == other.upper
+        }
+    }
+}
+
+impl<T: IntervalBoundary> std::cmp::PartialEq<T> for BasicInterval<T> {
+    fn eq(&self, other: &T) -> bool {
+        self.is_unit() && self.lower == *other
+    }
+}
+
+impl<T: IntervalBoundary> std::cmp::Eq for BasicInterval<T> {}
+
+impl<T: IntervalBoundary> Ord for BasicInterval<T> {
+    /// Compare two intervals.
+    ///
+    /// The criteria for comparison is the same as the derived implementation (that is, compare `lower` and then `upper`),
+    /// with special behavior for `empty` intervals:
+    /// - If both intervals are empty, they compare equal.
+    /// - Otherwise, `empty` always compares less than other.
+    #[inline]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self.is_empty() {
+            if other.is_empty() {
+                std::cmp::Ordering::Equal
+            } else {
+                std::cmp::Ordering::Less
+            }
+        } else {
+            self.lower
+                .cmp(&other.lower)
+                .then(self.upper.cmp(&other.upper))
+        }
+    }
+}
+
+impl<T: IntervalBoundary> PartialOrd for BasicInterval<T> {
+    /// Compare two intervals.
+    ///
+    /// The criteria for comparison is the same as the derived implementation (that is, compare `lower` and then `upper`),
+    /// with special behavior for `empty` intervals:
+    /// - If both intervals are empty, they compare equal.
+    /// - Otherwise, `empty` always compares less than other.
+    #[inline]
+    #[must_use]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T: IntervalBoundary> PartialOrd<T> for BasicInterval<T> {
+    fn partial_cmp(&self, other: &T) -> Option<std::cmp::Ordering> {
+        use std::cmp::Ordering;
+        if self.is_empty() {
+            Some(std::cmp::Ordering::Less)
+        } else if self.upper.lt(other) {
+            Some(Ordering::Less)
+        } else if self.lower.gt(other) {
+            Some(Ordering::Greater)
+        } else if self.is_unit() && self.lower.eq(other) {
+            Some(Ordering::Equal)
+        } else {
+            None
         }
     }
 }
@@ -254,438 +365,8 @@ impl<T: IntervalBoundary> std::default::Default for BasicInterval<T> {
     }
 }
 
-macro_rules! interval_arith_impl {
-    ($trait:ty, $output:ty, $fn:ident, $lower_counterpart:ident, $upper_counterpart:ident) => {
-        impl<T: IntervalBoundary> $trait for BasicInterval<T> {
-            type Output = WrappedInterval<T>;
-            fn $fn(&self, rhs: &Self) -> Self::Output {
-                if self.is_empty() || rhs.is_empty() {
-                    WrappedInterval::Empty
-                } else if self.is_top() || rhs.is_top() {
-                    WrappedInterval::Top
-                } else if let (Some(a), Some(ref b)) = (self.as_literal(), rhs.as_literal()) {
-                    // optimize for the case where we are adding literals.
-                    WrappedInterval::Basic(BasicInterval::new_unit(a.wrapping_add(b)))
-                } else {
-                    let (lower, lower_wrapped) =
-                        match self.lower.checked_add(&rhs.$lower_counterpart) {
-                            Some(val) => (val, false),
-                            None => (self.lower.wrapping_add(&rhs.$lower_counterpart), true),
-                        };
-                    let (upper, upper_wrapped) =
-                        match self.upper.checked_add(&rhs.$upper_counterpart) {
-                            Some(val) => (val, false),
-                            None => (self.upper.wrapping_add(&rhs.$upper_counterpart), true),
-                        };
-
-                    match (lower_wrapped, upper_wrapped) {
-                        (true, true) => WrappedInterval::Basic(BasicInterval::new(upper, lower)),
-                        (false, false) => WrappedInterval::Basic(BasicInterval::new(lower, upper)),
-                        (true, false) => {
-                            // Lower wrapped, but upper did not. We have a union now.
-                            let wrapped = BasicInterval::new(lower, T::max_value());
-                            let no_wrap = BasicInterval::new(T::min_value(), upper);
-                            WrappedInterval::Compound(CompoundInterval::from_iter([
-                                wrapped, no_wrap,
-                            ]))
-                        }
-                        (false, true) => {
-                            let wrapped = BasicInterval::new(lower, T::max_value());
-                            let no_wrap = BasicInterval::new(T::min_value(), upper);
-                            WrappedInterval::Compound(CompoundInterval::from_iter([
-                                wrapped, no_wrap,
-                            ]))
-                        }
-                    }
-                }
-            }
-        }
-    };
-}
-
-// Implement Add and Sub here.
-interval_arith_impl!(
-    IntervalAdd<T>,
-    WrappedInterval<T>,
-    interval_add,
-    lower,
-    upper
-);
-interval_arith_impl!(
-    IntervalSub<T>,
-    WrappedInterval<T>,
-    interval_sub,
-    upper,
-    lower
-);
-
-impl<T: IntervalBoundary + num::Signed> IntervalNeg<T, WrappedInterval<T>> for BasicInterval<T> {
-    fn interval_neg(&self) -> WrappedInterval<T> {
-        if self.is_empty() {
-            WrappedInterval::Empty
-        } else if self.is_top() {
-            WrappedInterval::Top
-        } else if let Some(val) = self.as_literal() {
-            WrappedInterval::Basic(BasicInterval::new_unit(-val))
-        } else if self.lower == T::min_value() {
-            WrappedInterval::from_iter([
-                BasicInterval::new_unit(T::min_value()),
-                BasicInterval::new(-self.upper, T::max_value()),
-            ])
-        } else {
-            WrappedInterval::Basic(BasicInterval::new(-self.upper, -self.lower))
-        }
-    }
-}
-
-impl<T: IntervalBoundary> IntervalMax<T, BasicInterval<T>> for BasicInterval<T> {
-    type Output = WrappedInterval<T>;
-    fn interval_max(&self, rhs: &BasicInterval<T>) -> Self::Output {
-        if self.is_empty() || rhs.is_empty() {
-            return WrappedInterval::Empty;
-        }
-        if self.is_top() {
-            rhs.into()
-        } else if rhs.is_top() {
-            self.into()
-        } else {
-            WrappedInterval::Basic(BasicInterval::new(
-                self.lower.max(rhs.lower),
-                self.upper.max(rhs.upper),
-            ))
-        }
-    }
-}
-
-impl<T: IntervalBoundary> IntervalMin<T, BasicInterval<T>> for BasicInterval<T> {
-    type Output = WrappedInterval<T>;
-    fn interval_min(&self, rhs: &BasicInterval<T>) -> Self::Output {
-        if self.is_empty() || rhs.is_empty() {
-            return WrappedInterval::Empty;
-        }
-        if self.is_top() {
-            rhs.into()
-        } else if rhs.is_top() {
-            self.into()
-        } else {
-            WrappedInterval::Basic(BasicInterval::new(
-                self.lower.min(rhs.lower),
-                self.upper.min(rhs.upper),
-            ))
-        }
-    }
-}
-
-impl<T: IntervalBoundary> IntervalMax<T, BasicInterval<T>> for WrappedInterval<T> {
-    type Output = WrappedInterval<T>;
-    fn interval_max(&self, rhs: &BasicInterval<T>) -> Self::Output {
-        match self {
-            WrappedInterval::Empty => WrappedInterval::Empty,
-            WrappedInterval::Top => rhs.into(),
-            WrappedInterval::Basic(interval) => interval.interval_max(rhs),
-            WrappedInterval::Compound(intervals) => intervals.interval_max(rhs),
-        }
-    }
-}
-
-impl<T: IntervalBoundary> IntervalMin<T, BasicInterval<T>> for WrappedInterval<T> {
-    type Output = WrappedInterval<T>;
-    fn interval_min(&self, rhs: &BasicInterval<T>) -> Self::Output {
-        match self {
-            WrappedInterval::Empty => WrappedInterval::Empty,
-            WrappedInterval::Top => rhs.into(),
-            WrappedInterval::Basic(interval) => interval.interval_min(rhs),
-            WrappedInterval::Compound(intervals) => intervals.interval_min(rhs),
-        }
-    }
-}
-
-/// Implementation of `IntervalMul` for `BasicInterval` on unsigned integers.
-macro_rules! unsigned_mul_impl {
-    ($format:ty, $intermediate:ty, $width:literal) => {
-        impl IntervalMul<$format, BasicInterval<$format>> for BasicInterval<$format> {
-            type Output = WrappedInterval<$format>;
-            fn interval_mul(&self, rhs: &BasicInterval<$format>) -> Self::Output {
-                let max: $format = num::Bounded::max_value();
-                let zero: $format = num::Zero::zero();
-                let one: $intermediate = num::One::one();
-                if self.is_empty() || rhs.is_empty() {
-                    return WrappedInterval::Empty;
-                }
-                if self.is_top() || rhs.is_top() {
-                    return WrappedInterval::Top;
-                }
-                if let (Some(a), Some(b)) = (self.as_literal(), rhs.as_literal()) {
-                    return WrappedInterval::Basic(BasicInterval::new_unit(a.wrapping_mul(b)));
-                }
-                if let (Some(a), other) = match (self.as_literal(), rhs.as_literal()) {
-                    (Some(val), None) => (Some(val), rhs),
-                    (None, Some(val)) => (Some(val), self),
-                    (None, None) => (None, rhs),
-                    _ => unreachable!("Already matched against (Some(_), Some(_))")
-                    } {
-                        if a == 0 {
-                            return WrappedInterval::new_unit(zero);
-                        } else if a == 1 {
-                            return WrappedInterval::Basic(*other);
-                        }
-                }
-                // One of them is a literal, and the other is not.
-                if self.as_literal().is_some_and(|v| v == zero) || rhs.as_literal().is_some_and(|v| v == zero) {
-                    return WrappedInterval::new_unit(zero);
-                }
-
-                let lower = <$intermediate>::from(self.lower) * <$intermediate>::from(rhs.lower);
-                let upper = <$intermediate>::from(self.upper) * <$intermediate>::from(rhs.upper);
-                let upper_wrap_count = upper >> <$format>::BITS;
-                let lower_wrap_count = lower >> <$format>::BITS;
-
-                // Safety: we bitand with the max value of the type, so we know the value is within the right range.
-                let lower_bound = unsafe {
-                    <$format>::try_from(lower.bitand(<$intermediate>::from(max))).unwrap_unchecked()
-                };
-                let upper_bound = unsafe {
-                    <$format>::try_from(upper.bitand(<$intermediate>::from(max))).unwrap_unchecked()
-                };
-
-                if upper_wrap_count == lower_wrap_count {
-                    // If they wrapped the same number of times, then it must be the case that lower < upper.
-                    WrappedInterval::new_concrete(lower_bound, upper_bound)
-                } else if (lower_wrap_count + one) == upper_wrap_count
-                    // If upper wrapped one more time than lower and lower_bound > upper_bound...
-                    // With unsigned, we also know that lower cannot wrap when upper does not.
-                    && lower_bound > upper_bound
-                {
-                    WrappedInterval::Compound(CompoundInterval::from_iter([
-                        BasicInterval::new(upper_bound, <$format as num::traits::Bounded>::max_value()),
-                        BasicInterval::new(<$format as num::traits::Bounded>::min_value(), lower_bound),
-                    ]))
-                } else {
-                    WrappedInterval::Top
-                }
-            }
-        }
-    }
-}
-
-unsigned_mul_impl!(u8, u16, 8u8);
-unsigned_mul_impl!(u16, u32, 16u8);
-unsigned_mul_impl!(u32, u64, 32u8);
-unsigned_mul_impl!(u64, u128, 64u8);
-
-macro_rules! signed_mul_impl {
-    ($format:ty, $intermediate:ty, $width:literal) => {
-        impl IntervalMul<$format, BasicInterval<$format>> for BasicInterval<$format> {
-        type Output = WrappedInterval<$format>;
-        fn interval_mul(&self, rhs: &BasicInterval<$format>) -> Self::Output {
-            use num::traits::ConstOne;
-            use num::traits::ConstZero;
-            let max = <$format>::MAX;
-            let min = <$format>::MIN;
-            let zero: $format = ConstZero::ZERO;
-            let one: $format = ConstOne::ONE;
-            let one_wide: $intermediate = ConstOne::ONE;
-            if self.is_empty() || rhs.is_empty() {
-                return WrappedInterval::Empty;
-            }
-            if self.is_top() || rhs.is_top() {
-                return WrappedInterval::Top;
-            }
-            if let (Some(a), Some(b)) = (self.as_literal(), rhs.as_literal()) {
-                return WrappedInterval::Basic(BasicInterval::new_unit(a.wrapping_mul(b)));
-            }
-            // if one of them is a literal..
-            if let (Some(a), other) = match (self.as_literal(), rhs.as_literal()) {
-                (Some(val), None) => (Some(val), rhs),
-                (None, Some(val)) => (Some(val), self),
-                (None, None) => (None, rhs),
-                _ => unreachable!("Already matched against (Some(_), Some(_))"),
-            } {
-                if a == zero {
-                    return WrappedInterval::new_unit(zero);
-                }
-                if a == one {
-                    return WrappedInterval::Basic(*other);
-                }
-                if a == -one {
-                    // if this is negative one and we are multiplying by
-                    if other.lower >= zero {
-                        return WrappedInterval::Basic(BasicInterval::new(
-                            other.upper * a,
-                            other.lower * a,
-                        ));
-                    }
-                    if other.upper <= zero {
-                        let lower = other.upper * a;
-                        if other.lower == min {
-                            return WrappedInterval::from_iter([
-                                BasicInterval::new(lower, max),
-                                BasicInterval::new_unit(min),
-                            ]);
-                        }
-                    }
-                }
-            }
-
-            // If our lower is negative, then the new lower bound will be...
-            let lower_extended = <$intermediate>::from(self.lower);
-            let upper_extended = <$intermediate>::from(self.upper);
-            let other_lower_extended = <$intermediate>::from(rhs.lower);
-            let other_upper_extended = <$intermediate>::from(rhs.upper);
-
-            // We have to do cross product multiplication here.
-            // Can be vectorized later on for performance.
-
-            let bounds = [
-                lower_extended * other_lower_extended,
-                lower_extended * other_upper_extended,
-                upper_extended * other_lower_extended,
-                upper_extended * other_upper_extended,
-            ];
-
-            // this is the bound in the wider format
-            let low_bound = bounds.iter().min().unwrap();
-            let high_bound = bounds.iter().max().unwrap();
-
-            let wrap_count = |val: $intermediate| (val.abs() >> <$format>::BITS) * val.signum();
-            // let upper_wrap_count = *high_bound / $intermediate::from()
-
-            // Safety: we bitand with the proper mask
-            let lower_bound = unsafe {
-                <$format>::try_from(low_bound.bitand((one_wide << <$format>::BITS) - one_wide)).unwrap_unchecked()
-            };
-            let upper_bound = unsafe {
-                <$format>::try_from(high_bound.bitand((one_wide << <$format>::BITS) - one_wide)).unwrap_unchecked()
-            };
-
-            let upper_wrap_count = wrap_count(*high_bound);
-            let lower_wrap_count = wrap_count(*low_bound);
-
-            if upper_wrap_count == lower_wrap_count {
-                // If they wrap the same number of times, then it must be the case that lower < upper.
-                assert!(lower_bound <= upper_bound, "Violating invariant: lower <= upper");
-                WrappedInterval::new_concrete(lower_bound, upper_bound)
-            } else if (lower_wrap_count + one_wide) == upper_wrap_count
-                // If upper wrapped one more time than lower and lower_bound > upper_bound...
-                // With unsigned, we also know that lower cannot wrap when upper does not.
-                && lower_bound > upper_bound
-            {
-                WrappedInterval::from_iter([
-                    BasicInterval::new(upper_bound, <$format as num::traits::Bounded>::max_value()),
-                    BasicInterval::new(min, lower_bound),
-                ])
-            } else {
-                WrappedInterval::Top
-            }
-        }
-    }
-}
-}
-
-signed_mul_impl!(i8, i16, 8u8);
-signed_mul_impl!(i16, i32, 16u8);
-signed_mul_impl!(i32, i64, 32u8);
-signed_mul_impl!(i64, i128, 64u8);
-
-impl<T: IntervalBoundary> Union<T, BasicInterval<T>> for BasicInterval<T> {
-    /// Return a new `WrappedInterval` that is the union of self and other
-    #[must_use]
-    #[allow(clippy::similar_names)] // subsumer and subsumed are fine.
-    fn union(&self, other: &Self) -> WrappedInterval<T> {
-        match (self, other) {
-            (a, b) if a.is_top() || b.is_top() => WrappedInterval::Top,
-            (a, b) if a.is_empty() && b.is_empty() => WrappedInterval::Empty,
-            (a, b) if a == b => WrappedInterval::Basic(*a),
-            // If just one is empty, then Unit of other
-            (empty, other) | (other, empty) if empty.is_empty() => WrappedInterval::Basic(*other),
-            (subsumer, subsumed) | (subsumed, subsumer) if subsumer.subsumes(subsumed) => {
-                WrappedInterval::Basic(*subsumer)
-            }
-            // Now, If the upper bound of one of our intervals lies within the other interval,
-            // Then we can extend the interval.
-            (greater, smaller) | (smaller, greater) if greater.has_value(smaller.upper) => {
-                // We already know they're not subsumed, as we tested for this.
-                WrappedInterval::Basic(BasicInterval {
-                    lower: smaller.lower,
-                    upper: greater.upper,
-                })
-            }
-            // The lower bound of one of the intervals lies within the other interval.
-            (greater, smaller) | (smaller, greater) if smaller.has_value(greater.lower) => {
-                WrappedInterval::Basic(BasicInterval {
-                    lower: greater.lower,
-                    upper: smaller.upper,
-                })
-            }
-            // The two intervals are adjacent, so we can make a new one that extends them both.
-            // This occurs when the lower bound of one interval is one more than the upper bound of the other.
-            (greater, smaller) | (smaller, greater)
-                if smaller.upper.saturating_add(&T::one()) == greater.lower =>
-            {
-                WrappedInterval::Basic(BasicInterval {
-                    lower: smaller.lower,
-                    upper: greater.upper,
-                })
-            }
-            // Otherwise, the resulting interval is a union of the two intervals.
-            (a, b) => WrappedInterval::Compound(CompoundInterval::from_iter_unchecked([*a, *b])),
-        }
-    }
-}
-impl<T: IntervalBoundary> Union<T, BasicInterval<T>> for WrappedInterval<T> {
-    fn union(&self, other: &BasicInterval<T>) -> Self {
-        match self {
-            Self::Empty => Self::Basic(*other),
-            Self::Top => Self::Top,
-            Self::Basic(interval) => interval.union(other),
-            Self::Compound(intervals) => {
-                let mut new = intervals.clone();
-                new.insert(*other);
-                Self::Compound(new)
-            }
-        }
-    }
-}
-
-impl<T: IntervalBoundary> Union<T, WrappedInterval<T>> for WrappedInterval<T> {
-    fn union(&self, other: &Self) -> WrappedInterval<T> {
-        match (self, other) {
-            // This covers (Empty, Empty)
-            (other, empty) | (empty, other) if empty.is_empty() => other.clone(),
-            // This covers (_, Top) and (Top, _)
-            (_, top) | (top, _) if top.is_top() => WrappedInterval::Top,
-
-            (a, b) if a == b => a.clone(),
-            //
-            (&Self::Basic(interval), &Self::Basic(other)) => interval.union(&other),
-            (&Self::Basic(ref unit), &Self::Compound(ref union_))
-            | (&Self::Compound(ref union_), &Self::Basic(ref unit)) => union_.union(unit),
-            (Self::Compound(a), other) => a.union(other),
-            _ => unreachable!(), // (Empty, _) covered by first arm, (Top, _) covered by second arm.
-        }
-    }
-}
-
-impl<T: IntervalBoundary> Intersect<T, BasicInterval<T>> for BasicInterval<T> {
-    type Output = BasicInterval<T>;
-    /// Return a new interval that is the intersection of this interval and `other`.
-    #[must_use]
-    fn intersection(&self, other: &Self) -> Self::Output {
-        Self {
-            lower: std::cmp::max(self.lower, other.lower),
-            upper: std::cmp::min(self.upper, other.upper),
-        }
-    }
-}
-
-impl<T: IntervalBoundary> IntersectAssign<T, BasicInterval<T>> for BasicInterval<T> {
-    fn intersect(&mut self, other: &Self) {
-        self.lower = std::cmp::max(self.lower, other.lower);
-        self.upper = std::cmp::min(self.upper, other.upper);
-    }
-}
-
-impl<T: IntervalBoundary> Interval<T> for BasicInterval<T> {
+impl<T: IntervalBoundary> Interval for BasicInterval<T> {
+    type Inner = T;
     #[inline]
     fn from_literals(lower: T, upper: T) -> Self {
         Self { lower, upper }
@@ -764,6 +445,16 @@ pub enum WrappedInterval<T: IntervalBoundary> {
     Basic(BasicInterval<T>),
     Compound(CompoundInterval<T>),
     Top,
+}
+
+impl<T: IntervalBoundary> WrappedInterval<T> {
+    pub fn is_unit(&self) -> bool {
+        match *self {
+            Self::Basic(ref t) => t.is_unit(),
+            Self::Empty | Self::Top => false,
+            Self::Compound(ref t) => t.is_unit(),
+        }
+    }
 }
 
 impl<T: IntervalBoundary> WrappedInterval<T> {
@@ -851,8 +542,8 @@ impl<T: IntervalBoundary> std::cmp::PartialEq for WrappedInterval<T> {
     }
 }
 
-impl<T: IntervalBoundary> IntersectAssign<T, WrappedInterval<T>> for WrappedInterval<T> {
-    fn intersect(&mut self, other: &Self) {
+impl<T: IntervalBoundary> IntersectAssign for WrappedInterval<T> {
+    fn interval_intersect(&mut self, other: &Self) {
         match (self, other) {
             // Do nothing if a is empty, b is top, or a == b.
             (a, b) if b.is_top() || a == b || matches!(a, Self::Empty) => (),
@@ -869,7 +560,7 @@ impl<T: IntervalBoundary> IntersectAssign<T, WrappedInterval<T>> for WrappedInte
                 let Self::Basic(ref mut interval) = a else {
                     unreachable!()
                 };
-                interval.intersect(other_interval);
+                interval.interval_intersect(other_interval);
                 // If their intersection was empty, then we prefer to set this to WrappedInterval::Empty.
                 if interval.is_empty() {
                     *a = Self::Empty;
@@ -879,7 +570,7 @@ impl<T: IntervalBoundary> IntersectAssign<T, WrappedInterval<T>> for WrappedInte
                 let Self::Compound(ref mut this) = a else {
                     unreachable!()
                 };
-                this.intersect(other);
+                this.interval_intersect(other);
                 match this.len() {
                     0 => *a = Self::Empty,
                     1 => {
@@ -893,11 +584,11 @@ impl<T: IntervalBoundary> IntersectAssign<T, WrappedInterval<T>> for WrappedInte
                 let Self::Compound(ref mut this) = a else {
                     unreachable!()
                 };
-                this.intersect(other);
+                this.interval_intersect(other);
                 match this.len() {
                     0 => *a = Self::Empty,
                     1 => {
-                        let inner = this.get_inner_set_mut().drain().next().unwrap();
+                        let inner = this.drain().next().unwrap();
                         *a = Self::Basic(inner);
                     }
                     _ => (),
@@ -907,7 +598,7 @@ impl<T: IntervalBoundary> IntersectAssign<T, WrappedInterval<T>> for WrappedInte
                 let Self::Basic(interval) = a else {
                     unreachable!()
                 };
-                let new = other.intersection(interval);
+                let new = other.interval_intersection(interval);
                 match new.len() {
                     0 => *a = Self::Empty,
                     1 => *a = Self::Basic(*new.iter().next().unwrap()),
@@ -919,12 +610,12 @@ impl<T: IntervalBoundary> IntersectAssign<T, WrappedInterval<T>> for WrappedInte
     }
 }
 
-impl<T: IntervalBoundary> Intersect<T, WrappedInterval<T>> for WrappedInterval<T> {
+impl<T: IntervalBoundary> Intersect for WrappedInterval<T> {
     type Output = Self;
 
     // Same code as above, just returns a new value instead of modifying in place.
     #[must_use]
-    fn intersection(&self, other: &Self) -> Self {
+    fn interval_intersection(&self, other: &Self) -> Self {
         macro_rules! match_len {
             ($a: expr, $new:expr) => {
                 match $a.len() {
@@ -940,7 +631,7 @@ impl<T: IntervalBoundary> Intersect<T, WrappedInterval<T>> for WrappedInterval<T
             (a, b) if a.is_top() => b.clone(),
             // If both a and b are unit, then we just intersect them.
             (WrappedInterval::Basic(interval), Self::Basic(other_interval)) => {
-                let new = interval.intersection(other_interval);
+                let new = interval.interval_intersection(other_interval);
                 // If their intersection was empty, then we prefer to set this to WrappedInterval::Empty.
                 if new.is_empty() {
                     Self::Empty
@@ -949,15 +640,15 @@ impl<T: IntervalBoundary> Intersect<T, WrappedInterval<T>> for WrappedInterval<T
                 }
             }
             (Self::Compound(this), Self::Basic(other)) => {
-                let mut new = this.intersection(other);
+                let mut new = this.interval_intersection(other);
                 match_len!(this, new)
             }
             (Self::Compound(ref this), Self::Compound(ref other)) => {
-                let mut new = this.intersection(other);
+                let mut new = this.interval_intersection(other);
                 match_len!(this, new)
             }
             (WrappedInterval::Basic(ref this), Self::Compound(ref other)) => {
-                let mut new = other.intersection(this);
+                let mut new = other.interval_intersection(this);
                 match_len!(other, new)
             }
             _ => unreachable!(),
@@ -982,7 +673,8 @@ impl<T: IntervalBoundary> WrappedInterval<T> {
     }
 }
 
-impl<T: IntervalBoundary> Interval<T> for WrappedInterval<T> {
+impl<T: IntervalBoundary> Interval for WrappedInterval<T> {
+    type Inner = T;
     #[inline]
     fn from_literals(lower: T, upper: T) -> Self {
         Self::new_concrete(lower, upper)
@@ -1089,6 +781,8 @@ impl<T: IntervalBoundary> Interval<T> for WrappedInterval<T> {
 
 pub type U32Interval = WrappedInterval<u32>;
 pub type I32Interval = WrappedInterval<i32>;
+pub type I64Interval = WrappedInterval<i64>;
+pub type U64Interval = WrappedInterval<u64>;
 
 impl<T: IntervalBoundary> From<BasicInterval<T>> for WrappedInterval<T> {
     fn from(unit: BasicInterval<T>) -> Self {
@@ -1132,6 +826,42 @@ bitflags! {
     }
 }
 
+impl BoolInterval {
+    pub const TOP: Self = Self::Unknown;
+    /// Return whether the two intervals are unit and equivalent. If either is empty, this returns empty.
+    /// # Examples
+    /// ```
+    /// # use abc_helper::solvers::interval::BoolInterval;
+    /// let a = BoolInterval::True;
+    /// let b = BoolInterval::True;
+    /// assert_eq!(a.interval_eq(b), BoolInterval::True);
+    ///
+    /// let c = BoolInterval::False;
+    /// assert_eq!(a.interval_eq(c), BoolInterval::False);
+    /// assert_eq!(a.interval_eq(BoolInterval::Unknown), BoolInterval::Unknown);
+    ///
+    /// assert_eq!(a.interval_eq(BoolInterval::Empty), BoolInterval::Empty);
+    /// ```
+    #[must_use]
+    pub fn interval_eq(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Empty, _) | (_, Self::Empty) => Self::Empty,
+            (Self::True, Self::True) | (Self::False, Self::False) => Self::True,
+            (Self::True, Self::False) | (Self::False, Self::True) => Self::False,
+            _ => Self::Unknown,
+        }
+    }
+
+    #[must_use]
+    pub fn interval_neq(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Empty, _) | (_, Self::Empty) => Self::Empty,
+            (Self::True, Self::True) | (Self::False, Self::False) => Self::False,
+            (Self::True, Self::False) | (Self::False, Self::True) => Self::True,
+            _ => Self::Unknown,
+        }
+    }
+}
 impl std::fmt::Display for BoolInterval {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
@@ -1145,6 +875,7 @@ impl std::fmt::Display for BoolInterval {
 }
 
 impl From<bool> for BoolInterval {
+    #[inline]
     fn from(value: bool) -> Self {
         if value {
             Self::True
@@ -1209,7 +940,7 @@ mod tests {
             WrappedInterval::Compound(CompoundInterval::top()),
             WrappedInterval::Basic(BasicInterval::from(10..20)),
         ] {
-            assert_eq!(interval_a.union(&interval), WrappedInterval::Top);
+            assert_eq!(interval_a.interval_union(&interval), WrappedInterval::Top);
         }
     }
 
@@ -1229,7 +960,7 @@ mod tests {
             WrappedInterval::Compound(CompoundInterval::top()),
             WrappedInterval::Basic(BasicInterval::from(10..20)),
         ] {
-            let intersection = interval_a.intersection(&interval);
+            let intersection = interval_a.interval_intersection(&interval);
             assert_eq!(intersection, interval, "{interval_a} \u{222A} {interval}");
         }
     }
@@ -1256,14 +987,14 @@ mod tests {
         // Adjacent `Wrapped` intervals
         let interval_a = WrappedInterval::Basic(BasicInterval::from(10..20));
         let interval_b = WrappedInterval::Basic(BasicInterval::from(20..25));
-        let union_ = interval_a.union(&interval_b);
+        let union_ = interval_a.interval_union(&interval_b);
         assert_eq!(union_, WrappedInterval::Basic(BasicInterval::from(10..25)));
 
         // Adjacent `Unit` intervals
         let interval_a = BasicInterval::new(10, 20);
         let interval_b = BasicInterval::new(21, 25);
         assert_eq!(
-            interval_b.union(&interval_a),
+            interval_b.interval_union(&interval_a),
             WrappedInterval::Basic(BasicInterval::new(10, 25))
         );
 
@@ -1271,7 +1002,7 @@ mod tests {
         let interval_a = BasicInterval::new(10, 20);
         let interval_b = WrappedInterval::Basic(BasicInterval::new(21, 25));
         assert_eq!(
-            interval_b.union(&interval_a),
+            interval_b.interval_union(&interval_a),
             WrappedInterval::Basic(BasicInterval::new(10, 25))
         );
     }

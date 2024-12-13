@@ -558,9 +558,7 @@ impl FfiAbcType {
     )]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn abc_new_Struct(
-        fields: *mut FfiStr,
-        types: *const FfiAbcType,
-        len: usize,
+        fields: *mut FfiStr, types: *const FfiAbcType, len: usize,
     ) -> MaybeAbcType {
         // If len is 0, then we don't even have to check against null pointers. Just return an empty struct.
         if len == 0 {
