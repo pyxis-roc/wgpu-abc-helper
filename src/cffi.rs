@@ -6,16 +6,17 @@
     clippy::default_trait_access // Default::default() is just so much nicer.
 )]
 
-use super::{AbcType, Term};
+use super::{AbcType, CmpOp, Term};
 use ffi_support::FfiStr;
+use std::borrow::Borrow;
 use std::ffi::{c_char, CString};
-use std::sync::RwLock;
+use std::sync::{RwLock, TryLockResult};
 
 use lazy_static::lazy_static;
 
 #[allow(unused_imports)]
 use crate::cbindgen_annotate;
-use crate::{AbcScalar, StructField};
+use crate::{AbcScalar, Literal, StructField};
 
 /// Represents a possible term, or an error code.
 ///
@@ -43,7 +44,6 @@ impl From<Result<FfiTerm, ErrorCode>> for MaybeTerm {
         }
     }
 }
-
 /// Represents a possible `AbcType`, or an error code.
 #[repr(C)]
 pub enum MaybeAbcType {
@@ -213,6 +213,21 @@ pub struct FfiTerm {
 }
 
 impl FfiTerm {
+    /// Convert the `FfiTerm` into a `Term`.
+    #[inline]
+    fn into_term(self) -> Result<Term, ErrorCode> {
+        self.try_into()
+    }
+
+    /// Convert the `FfiTerm` into a `Term` using the provided term map.
+    /// This is used when the caller already has a lock on `Terms`.
+    fn into_term_with_terms(self, term_map: &Vec<Option<Term>>) -> Result<Term, ErrorCode> {
+        term_map.get(self.id).map_or_else(
+            || Err(ErrorCode::BadTerm),
+            |t| t.clone().map_or_else(|| Err(ErrorCode::BadTerm), |t| Ok(t)),
+        )
+    }
+
     /// Like `new`, except the caller passes in the term map. Used when the caller already has a lock on the terms.
     ///
     /// # Errors
@@ -231,6 +246,7 @@ impl FfiTerm {
             Ok(FfiTerm { id })
         }
     }
+
     /// Add the provided term to the global terms map and return a handle to it.
     ///
     /// # Errors
@@ -411,6 +427,130 @@ impl FfiTerm {
                 Self::new_with_terms(Term::new_cast(term, scalar), term_map).into()
             },
         )
+    }
+
+    /// Create a new comparison term, e.g. `x > y`.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid
+    ///
+    /// # Errors
+    /// - [`ErrorCode::NotFound`] is returned if either `lhs` or `rhs` do not exist in the library's collection.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_cmp_term(op: CmpOp, lhs: Self, rhs: Self) -> MaybeTerm {
+        let lhs_term = match lhs.try_into() {
+            Ok(term) => term,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+        let rhs_term = match rhs.try_into() {
+            Ok(term) => term,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+        Self::new(Term::new_cmp_op(op, &lhs_term, &rhs_term)).into()
+    }
+
+    /// Create a new index access term, e.g. `x[y]`.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if either `base` or `index` do not exist in the library's collection.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_index_access(base: Self, index: Self) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let base_term = match base.into_term_with_terms(terms) {
+            Ok(term) => term,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+        let index_term = match index.into_term_with_terms(terms) {
+            Ok(term) => term,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_index_access(&base_term, &index_term), terms).into()
+    }
+
+    /// Create a new struct access term, e.g. `x.y`.
+    ///
+    /// # Arguments
+    /// - `base`: The base term whose field is being accessed
+    /// - `field`: The name of the field being accessed.
+    /// - `ty`: The type of the struct being accessed. This is needed for term validation.
+    /// - `field_idx`: The index of the field in the structure being accessed.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term or type could not be found.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if `base` does not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms or Types container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_struct_access(
+        base: Self, field: FfiStr, ty: FfiAbcType, field_idx: usize,
+    ) -> MaybeTerm {
+        let ty = match ty.try_into() {
+            Ok(ty) => ty,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let base = match base.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let Some(field) = field.into_opt_string() else {
+            return MaybeTerm::Error(ErrorCode::NullPointer);
+        };
+
+        Self::new_with_terms(Term::new_struct_access(&base, field, ty, field_idx), terms).into()
+    }
+
+    /// Create a new splat term, e.g. `vec3(x)`.
+    ///
+    /// A `splat` is just shorthand for a vector of size `size` where each element is `term`.
+    ///
+    /// # Arguments
+    /// - `term`: The term to splat.
+    /// - `size`: The number of elements in the vector.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_splat(term: Self, size: u32) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let term = match term.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_splat(term, size), terms).into()
+    }
+
+    /// Create a new literal term.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a new `Literal` variant of `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_literal(lit: Literal) -> MaybeTerm {
+        Self::new(Term::new_literal(lit)).into()
     }
 }
 
@@ -670,6 +810,18 @@ impl FfiAbcType {
     }
 }
 
+impl TryFrom<FfiAbcType> for super::Handle<AbcType> {
+    type Error = ErrorCode;
+    fn try_from(t: FfiAbcType) -> Result<Self, Self::Error> {
+        // Get the map...
+        let types = Types.read().map_err(|_| ErrorCode::PoisonedLock)?;
+        match types.get(t.id) {
+            Some(Some(t)) => Ok(t.clone()),
+            _ => Err(ErrorCode::BadTerm),
+        }
+    }
+}
+
 /// A `ValidityKind` is returned by the `check_term_validity` function.
 #[repr(C)]
 pub enum ValidityKind {
@@ -681,11 +833,7 @@ pub enum ValidityKind {
     Poisoned,
 }
 
-/// Determine if `term` is contained in the global terms map.
-///
-/// If term is not found or is poisoned, returns false.
-///
-/// If the global terms map is poisoned,
+/// Determine if `term` is contained in the global terms map, returning `ValidityKind`.
 pub extern "C" fn check_term_validity(t: FfiTerm) -> ValidityKind {
     Terms.read().map_or_else(
         |_| ValidityKind::Poisoned,
