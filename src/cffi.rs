@@ -19,7 +19,7 @@ use crate::{AbcScalar, Literal, StructField};
 
 /// Represents a possible term, or an error code.
 ///
-/// There is no reason to construct this enum directly, as it is returned by the FFI functions.
+/// There is no reason to construct this enum directly; it meant to be returned by the FFI functions.
 #[repr(C)]
 pub enum MaybeTerm {
     Error(ErrorCode),
@@ -150,8 +150,8 @@ pub enum ErrorCode {
     Success = 0,
     /// Indicates a panic in the Rust code.
     Panic = 1,
-    /// Indicates a term that could not be found in the term arena.
-    BadTerm = 2,
+    /// Indicates an improper value
+    ValueError = 2,
     /// Indicates a poisoned lock
     ///
     /// This occurs when a thread panics while holding a lock.
@@ -223,8 +223,11 @@ impl FfiTerm {
     /// This is used when the caller already has a lock on `Terms`.
     fn into_term_with_terms(self, term_map: &Vec<Option<Term>>) -> Result<Term, ErrorCode> {
         term_map.get(self.id).map_or_else(
-            || Err(ErrorCode::BadTerm),
-            |t| t.clone().map_or_else(|| Err(ErrorCode::BadTerm), |t| Ok(t)),
+            || Err(ErrorCode::NotFound),
+            |t| {
+                t.clone()
+                    .map_or_else(|| Err(ErrorCode::NotFound), |t| Ok(t))
+            },
         )
     }
 
@@ -287,7 +290,7 @@ impl TryFrom<FfiTerm> for Term {
         let terms = Terms.read().map_err(|_| ErrorCode::PoisonedLock)?;
         match terms.get(t.id) {
             Some(Some(t)) => Ok(t.clone()),
-            _ => Err(ErrorCode::BadTerm),
+            _ => Err(ErrorCode::NotFound),
         }
     }
 }
@@ -302,7 +305,7 @@ impl FfiTerm {
         let p: Result<Term, ErrorCode> = p.try_into();
         match p {
             Ok(t) => Self::new(Term::new_unit_pred(&t)).into(),
-            _ => MaybeTerm::Error(ErrorCode::BadTerm),
+            _ => MaybeTerm::Error(ErrorCode::NotFound),
         }
     }
     /// Create a Term holding the `true` predicate
@@ -324,21 +327,21 @@ impl FfiTerm {
         let rhs: Result<Term, ErrorCode> = rhs.try_into();
         match (lhs, rhs) {
             (Ok(lhs), Ok(rhs)) => Self::new(Term::new_logical_and(&lhs, &rhs)).into(),
-            _ => MaybeTerm::Error(ErrorCode::BadTerm),
+            _ => MaybeTerm::Error(ErrorCode::NotFound),
         }
     }
 
     /// Constructs lhs || rhs
     ///
     /// Returns a `MaybeTerm`, which is either a `Term` if the term was successfully created,
-    /// or `BadTerm` if the provided terms were not valid.
+    /// or `NotFound` if the provided terms were not valid.
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_new_logical_or(lhs: Self, rhs: Self) -> MaybeTerm {
         let lhs: Result<Term, ErrorCode> = lhs.try_into();
         let rhs: Result<Term, ErrorCode> = rhs.try_into();
         match (lhs, rhs) {
             (Ok(lhs), Ok(rhs)) => Self::new(Term::new_logical_or(&lhs, &rhs)).into(),
-            _ => MaybeTerm::Error(ErrorCode::BadTerm),
+            _ => MaybeTerm::Error(ErrorCode::NotFound),
         }
     }
 
@@ -349,7 +352,7 @@ impl FfiTerm {
         let rhs: Result<Term, ErrorCode> = rhs.try_into();
         match (lhs, rhs) {
             (Ok(lhs), Ok(rhs)) => Self::new(Term::new_comparison(op, &lhs, &rhs)).into(),
-            _ => MaybeTerm::Error(ErrorCode::BadTerm),
+            _ => MaybeTerm::Error(ErrorCode::NotFound),
         }
     }
 
@@ -368,7 +371,27 @@ impl FfiTerm {
     }
 }
 
+/*
+Implementation of term constructors for expressions
+ */
 impl FfiTerm {
+    /// Helper method that resolves `ty` to the inner type, ensuring that it is an `AbcScalar` variant.
+    ///
+    /// # Errors
+    /// - [`ErrorCode::PoisonedLock`] is returned if the lock on the global Types container is poisoned.
+    /// - [`ErrorCode::NotFound`] is returned if the type does not exist in the library's collection.
+    /// - [`ErrorCode::WrongType`] is returned if the type is not a scalar type.
+    fn get_scalar_type(ty: FfiAbcType) -> Result<AbcScalar, ErrorCode> {
+        let types = Types.read().map_err(|_| ErrorCode::PoisonedLock)?;
+        let scalar = match types.get(ty.id) {
+            Some(Some(ty_inner)) => match ty_inner.as_ref() {
+                AbcType::Scalar(s) => *s,
+                _ => return Err(ErrorCode::WrongType),
+            },
+            _ => return Err(ErrorCode::NotFound),
+        };
+        Ok(scalar)
+    }
     /// Create a new variable Term.
     ///
     /// # Errors
@@ -404,29 +427,21 @@ impl FfiTerm {
     )]
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_new_cast(source_term: Self, ty: FfiAbcType) -> MaybeTerm {
-        Types.read().map_or_else(
-            |_| MaybeTerm::Error(ErrorCode::PoisonedLock),
-            |types| {
-                let scalar = match types.get(ty.id) {
-                    Some(Some(ty_inner)) => match ty_inner.as_ref() {
-                        AbcType::Scalar(s) => *s,
-                        _ => return MaybeTerm::Error(ErrorCode::WrongType),
-                    },
-                    _ => return MaybeTerm::Error(ErrorCode::NotFound),
-                };
-                // We need to get the term
-                let term_map = &mut *match Terms.write() {
-                    Ok(terms) => terms,
-                    Err(_) => return MaybeTerm::Error(ErrorCode::PoisonedLock),
-                };
-                let term = match term_map.get(source_term.id) {
-                    Some(Some(t)) => t.clone(),
-                    _ => return MaybeTerm::Error(ErrorCode::NotFound),
-                };
+        let resolved_type = match Self::get_scalar_type(ty) {
+            Ok(s) => s,
+            Err(e) => return MaybeTerm::Error(e),
+        };
 
-                Self::new_with_terms(Term::new_cast(term, scalar), term_map).into()
-            },
-        )
+        let term_map = &mut *match Terms.write() {
+            Ok(terms) => terms,
+            Err(_) => return MaybeTerm::Error(ErrorCode::PoisonedLock),
+        };
+        let term = match term_map.get(source_term.id) {
+            Some(Some(t)) => t.clone(),
+            _ => return MaybeTerm::Error(ErrorCode::NotFound),
+        };
+
+        Self::new_with_terms(Term::new_cast(term, resolved_type), term_map).into()
     }
 
     /// Create a new comparison term, e.g. `x > y`.
@@ -519,7 +534,7 @@ impl FfiTerm {
     ///
     /// # Arguments
     /// - `term`: The term to splat.
-    /// - `size`: The number of elements in the vector.
+    /// - `size`: The number of elements in the vector. Must be between 2 and 4  (inclusive).
     ///
     /// # Returns
     /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
@@ -527,8 +542,12 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    /// [`ErrorCode::ValueError`] is returned if `size` is not between 2 and 4.
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_new_splat(term: Self, size: u32) -> MaybeTerm {
+        if size < 2 || size > 4 {
+            return MaybeTerm::Error(ErrorCode::ValueError);
+        }
         let Ok(ref mut terms) = Terms.write() else {
             return MaybeTerm::Error(ErrorCode::PoisonedLock);
         };
@@ -552,12 +571,654 @@ impl FfiTerm {
     pub extern "C" fn abc_new_literal(lit: Literal) -> MaybeTerm {
         Self::new(Term::new_literal(lit)).into()
     }
+
+    /// Create a binary operation term, e.g. `x + y`.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if either `lhs` or `rhs` do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_binary_op(op: super::BinaryOp, lhs: Self, rhs: Self) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let lhs = match lhs.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let rhs = match rhs.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_binary_op(op, &lhs, &rhs), terms).into()
+    }
+
+    /// Create a new unary operation term, e.g. `-x`.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_unary_op(op: super::UnaryOp, term: Self) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let term = match term.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_unary_op(op, &term), terms).into()
+    }
+
+    /// Create a new term corresponding to wgsl's [`max`](https://www.w3.org/TR/WGSL/#max-float-builtin) bulitin.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if either `lhs` or `rhs` do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_max(lhs: Self, rhs: Self) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let lhs = match lhs.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let rhs = match rhs.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_max(&lhs, &rhs), terms).into()
+    }
+
+    /// Create a new term corresponding to wgsl's [`min`](https://www.w3.org/TR/WGSL/#min-float-builtin) builtin.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if either `lhs` or `rhs` do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_min(lhs: Self, rhs: Self) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let lhs = match lhs.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let rhs = match rhs.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_min(&lhs, &rhs), terms).into()
+    }
+
+    /// Create a new term akin to wgsl's [`select`](https://www.w3.org/TR/WGSL/#select-builtin) bulitin.
+    ///
+    /// ### Note: In this method, the condition is the first argument, while it is the last argument in the WGSL builtin.
+    ///
+    ///
+    /// # Arguments
+    /// - `iftrue`: The expression this term evaluates to if `predicate` is true
+    /// - `iffalse`: The expression this term evaluates to if `predicate` is false
+    /// - `Predicate`: The term that determines the resolution of `iftrue` or `iffalse`.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if either `lhs`, `m`, or `rhs` do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_select(iftrue: Self, iffalse: Self, predicate: Self) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let iftrue = match iftrue.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let iffalse = match iffalse.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let predicate = match predicate.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_select(&iftrue, &iffalse, &predicate), terms).into()
+    }
+
+    /// Helper method for creating new vector terms in a DRY fashion. Also works for matrices.
+    fn new_vec_helper(
+        components: &[Self], ty: FfiAbcType, is_matrix: bool,
+    ) -> Result<Self, ErrorCode> {
+        let resolved_type = Self::get_scalar_type(ty)?;
+
+        let Ok(ref mut terms) = Terms.write() else {
+            return Err(ErrorCode::PoisonedLock);
+        };
+
+        let mut resolved_components: Vec<Term> = Vec::with_capacity(components.len());
+        for component in components {
+            resolved_components.push(component.into_term_with_terms(terms)?);
+        }
+
+        let new_term = if is_matrix {
+            Term::new_vector(&resolved_components, resolved_type)
+        } else {
+            Term::new_vector(&resolved_components, resolved_type)
+        };
+
+        Self::new_with_terms(new_term, terms).map_err(|_| ErrorCode::PoisonedLock)
+    }
+
+    /// Create a new term corresponding to wgsl's `vec2` type. This should not be confused with array types.
+    ///
+    /// # Arguments
+    /// - `term_0`: The first term in the vector
+    /// - `term_1`: The second term in the vector
+    /// - `ty`: The type of the terms in the vector
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if either of the terms or the type does not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_vec2(term_0: Self, term_1: Self, ty: FfiAbcType) -> MaybeTerm {
+        Self::new_vec_helper(&[term_0, term_1], ty, false).into()
+    }
+
+    /// Create a new term corresponding to wgsl's `vec3` type. This should not be confused with array types.
+    ///
+    /// # Arguments
+    /// - `term_0`: The first term in the vector
+    /// - `term_1`: The second term in the vector
+    /// - `term_3`: The third term in the vector
+    /// - `ty`: The type of the terms in the vector
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if either of the terms or the type does not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_vec3(
+        term_0: Self, term_1: Self, term_2: Self, ty: FfiAbcType,
+    ) -> MaybeTerm {
+        Self::new_vec_helper(&[term_0, term_1, term_2], ty, false).into()
+    }
+
+    /// Create a new term corresponding to wgsl's `vec4` type. This should not be confused with array types.
+    ///
+    /// # Arguments
+    /// - `term_0`: The first term in the vector
+    /// - `term_1`: The second term in the vector
+    /// - `term_2`: The third term in the vector
+    /// - `term_3`: The fourth term in the vector
+    /// - `ty`: The type of the terms in the vector
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if either of the terms or the type does not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_vec4(
+        term_0: Self, term_1: Self, term_2: Self, term_3: Self, ty: FfiAbcType,
+    ) -> MaybeTerm {
+        Self::new_vec_helper(&[term_0, term_1, term_2, term_3], ty, false).into()
+    }
+
+    /// Create a new `array_length` term corresponding to the `arrayLength` operator in WGSL.
+    /// Note that `wgsl` only defines this method for dynamically sized arrays. This method is
+    /// not valid for fixed-sized arrays, matrices, or vectors.
+    ///
+    /// ### Notes
+    /// Do not use this term to add a constraint on the length of an array. Instead, invoke the solver's `mark_length` method.
+    /// This method is only meant to be used in the case that `arrayLength` is spelled in wgsl source.
+    ///
+    /// # Arguments
+    /// - `term`: The array term that this expression is being applied to.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_array_length(term: Self) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let term = match term.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::make_array_length(&term), terms).into()
+    }
+
+    /// Create a new `store` term.
+    ///
+    /// There is no explicit wgsl method that this corresponds to. However, it must be used when writing to array in
+    /// order to respect SSA requirements. This method creates a new term where each array element is the same as the
+    /// original array, except for the element at `index`, which is `value`.
+    ///
+    /// # Arguments
+    /// - `term`: The array term that is being written to.
+    /// - `index`: The index of the array that is being written to.
+    /// - `value`: The value that is being written to the array.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_store(term: Self, index: Self, value: Self) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let term = match term.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let index = match index.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let value = match value.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_store(term, index, value), terms).into()
+    }
+
+    /// Create a new struct store term.
+    ///
+    /// There is no explicit wgsl method that this corresponds to. However, it must be used when writing to a struct in
+    /// order to respect SSA requirements. This method creates a new term where each field is the same as the
+    /// original struct, except for the field at `field_idx`, which is `value`.
+    ///
+    /// # Arguments
+    /// - `term`: The struct term that is being written to.
+    /// - `field_idx`: The index of the field that is being written to.
+    /// - `value`: The value that is being written to the struct.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_struct_store(term: Self, field_idx: usize, value: Self) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let term = match term.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let value = match value.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_struct_store(term, field_idx, value), terms).into()
+    }
+
+    /// Create a new absolute value term corresponding to the [`abs`](https://www.w3.org/TR/WGSL/#abs-float-builtin) operator in WGSL.
+    ///
+    /// # Arguments
+    /// - `term`: The term that is being passed to the `abs` operator.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_abs(term: Self) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let term = match term.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_abs(&term), terms).into()
+    }
+
+    /// Create a new `pow` term corresponding to the [`pow`](https://www.w3.org/TR/WGSL/#pow-builtin) builtin in WGSL.
+    ///
+    /// # Arguments
+    /// - `base`: The base of the power operation.
+    /// - `exponent`: The exponent of the power operation.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if either `base` or `exponent` do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_pow(base: Self, exponent: Self) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let base = match base.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let exponent = match exponent.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_pow(&base, &exponent), terms).into()
+    }
+
+    /// Create a new term corresponding to wgsl's [`dot`](https://www.w3.org/TR/WGSL/#dot-builtin) builtin.
+    ///
+    /// # Arguments
+    /// - `lhs`: The left-hand side of the dot product.
+    /// - `rhs`: The right-hand side of the dot product.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if either `lhs` or `rhs` do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_dot(lhs: Self, rhs: Self) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let lhs = match lhs.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let rhs = match rhs.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_dot(&lhs, &rhs), terms).into()
+    }
+
+    /// Create a new `mat2x2` term
+    ///
+    /// The components of the matrix must correspond to `vec2` terms, which can be created via the `new_vec2`
+    /// method. A component may also be a term corresponding to a variable or expression that resolves to a `vec2`.
+    ///
+    /// # Arguments
+    /// - `row_0`: The first row of the matrix.
+    /// - `row_1`: The second row of the matrix.
+    /// - `ty`: The type of the terms in the matrix. This must be a scalar.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_mat2x2(row_0: Self, row_1: Self, ty: FfiAbcType) -> MaybeTerm {
+        Self::new_vec_helper(&[row_0, row_1], ty, true).into()
+    }
+
+    /// Create a new `mat2x3` term
+    ///
+    /// The components of the matrix must correspond to `vec3` terms, which can be created via the `new_vec3`
+    /// method. A component may also be a term corresponding to a variable or expression that resolves to a `vec3`.
+    ///
+    /// # Arguments
+    /// - `row_0`: The first row of the matrix.
+    /// - `row_1`: The second row of the matrix.
+    /// - `ty`: The type of the terms in the matrix. This must be a scalar.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_mat2x3(row_0: Self, row_1: Self, ty: FfiAbcType) -> MaybeTerm {
+        Self::new_vec_helper(&[row_0, row_1], ty, true).into()
+    }
+
+    /// Create a new `mat2x4` term
+    ///
+    /// The components of the matrix must correspond to `vec4` terms, which can be created via the `new_vec4`
+    /// method. A component may also be a term corresponding to a variable or expression that resolves to a `vec4`.
+    ///
+    /// # Arguments
+    /// - `row_0`: The first row of the matrix.
+    /// - `row_1`: The second row of the matrix.
+    /// - `ty`: The type of the terms in the matrix. This must be a scalar.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_mat2x4(row_0: Self, row_1: Self, ty: FfiAbcType) -> MaybeTerm {
+        Self::new_vec_helper(&[row_0, row_1], ty, true).into()
+    }
+
+    /// Create a new `mat3x2` term
+    ///
+    /// The components of the matrix must correspond to `vec2` terms, which can be created via the `new_vec2`
+    /// method. A component may also be a term corresponding to a variable or expression that resolves to a `vec2`.
+    ///
+    /// # Arguments
+    /// - `row_0`: The first row of the matrix.
+    /// - `row_1`: The second row of the matrix.
+    /// - `row_2`: The third row of the matrix.
+    /// - `ty`: The type of the terms in the matrix. This must be a scalar.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_mat3x2(
+        row_0: Self, row_1: Self, row_2: Self, ty: FfiAbcType,
+    ) -> MaybeTerm {
+        Self::new_vec_helper(&[row_0, row_1, row_2], ty, true).into()
+    }
+
+    /// Create a new `mat3x3` term
+    ///
+    /// The components of the matrix must correspond to `vec3` terms, which can be created via the `new_vec3`
+    /// method. A component may also be a term corresponding to a variable or expression that resolves to a `vec4`.
+    ///
+    /// # Arguments
+    /// - `row_0`: The first row of the matrix.
+    /// - `row_1`: The second row of the matrix.
+    /// - `row_2`: The third row of the matrix.
+    /// - `ty`: The type of the terms in the matrix. This must be a scalar.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_mat3x3(
+        row_0: Self, row_1: Self, row_2: Self, ty: FfiAbcType,
+    ) -> MaybeTerm {
+        Self::new_vec_helper(&[row_0, row_1, row_2], ty, true).into()
+    }
+
+    /// Create a new `mat3x4` term
+    ///
+    /// The components of the matrix must correspond to `vec4` terms, which can be created via the `new_vec4`
+    /// method. A component may also be a term corresponding to a variable or expression that resolves to a `vec4`.
+    ///
+    /// # Arguments
+    /// - `row_0`: The first row of the matrix.
+    /// - `row_1`: The second row of the matrix.
+    /// - `row_2`: The third row of the matrix.
+    /// - `ty`: The type of the terms in the matrix. This must be a scalar.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_mat3x4(
+        row_0: Self, row_1: Self, row_2: Self, ty: FfiAbcType,
+    ) -> MaybeTerm {
+        Self::new_vec_helper(&[row_0, row_1, row_2], ty, true).into()
+    }
+
+    /// Create a new `mat4x2` term
+    ///
+    /// The components of the matrix must correspond to `vec2` terms, which can be created via the `new_vec3`
+    /// method. A component may also be a term corresponding to a variable or expression that resolves to a `vec3`.
+    ///
+    /// # Arguments
+    /// - `row_0`: The first row of the matrix.
+    /// - `row_1`: The second row of the matrix.
+    /// - `row_2`: The third row of the matrix.
+    /// - `row_3`: The fourth row of the matrix.
+    /// - `ty`: The type of the terms in the matrix. This must be a scalar.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_mat4x2(
+        row_0: Self, row_1: Self, row_2: Self, row_3: Self, ty: FfiAbcType,
+    ) -> MaybeTerm {
+        Self::new_vec_helper(&[row_0, row_1, row_2, row_3], ty, true).into()
+    }
+
+    /// Create a new `mat4x3` term
+    ///
+    /// The components of the matrix must correspond to `vec2` terms, which can be created via the `new_vec3`
+    /// method. A component may also be a term corresponding to a variable or expression that resolves to a `vec3`.
+    ///
+    /// # Arguments
+    /// - `row_0`: The first row of the matrix.
+    /// - `row_1`: The second row of the matrix.
+    /// - `row_2`: The third row of the matrix.
+    /// - `row_3`: The fourth row of the matrix.
+    /// - `ty`: The type of the terms in the matrix. This must be a scalar.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_mat4x3(
+        row_0: Self, row_1: Self, row_2: Self, row_3: Self, ty: FfiAbcType,
+    ) -> MaybeTerm {
+        Self::new_vec_helper(&[row_0, row_1, row_2, row_3], ty, true).into()
+    }
+
+    /// Create a new `mat4x4` term
+    ///
+    /// The components of the matrix must correspond to `vec4` terms, which can be created via the `new_vec4`
+    /// method. A component may also be a term corresponding to a variable or expression that resolves to a `vec4`.
+    ///
+    /// # Arguments
+    /// - `row_0`: The first row of the matrix.
+    /// - `row_1`: The second row of the matrix.
+    /// - `row_2`: The third row of the matrix.
+    /// - `row_3`: The fourth row of the matrix.
+    /// - `ty`: The type of the terms in the matrix. This must be a scalar.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_mat4x4(
+        row_0: Self, row_1: Self, row_2: Self, row_3: Self, ty: FfiAbcType,
+    ) -> MaybeTerm {
+        Self::new_vec_helper(&[row_0, row_1, row_2, row_3], ty, true).into()
+    }
 }
 
 impl FfiTerm {
     /// Get the string representation of the term.
     ///
-    /// If the term is invalid, <BadTerm> is returned.
+    /// If the term is invalid, <NotFound> is returned.
     /// Note: The returned `c_string` MUST be freed by the caller, by calling `free_string` or this will lead to a memory leak.
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_term_to_cstr(self) -> *mut c_char {
@@ -575,7 +1236,7 @@ impl FfiTerm {
             }
             // As above, unwrap_unchecked is safe here, as CString::new cannot
             // ever return an error from an &str.
-            _ => unsafe { CString::new("<BadTerm>").unwrap_unchecked().into_raw() },
+            _ => unsafe { CString::new("<NotFound>").unwrap_unchecked().into_raw() },
         }
     }
 }
@@ -687,14 +1348,14 @@ impl FfiAbcType {
     /// - [`ErrorCode::NullPointer`] is returned if either `fields` or `types` is null.
     /// - [`ErrorCode::Alignmenterror`] is returned if the pointers are not properly aligned.
     /// - [`ErrorCode::PoisonedLock`] is returned if the lock on the global Types container is poisoned.
-    /// - [`ErrorCode::BadTerm`] is returned if any of the types passed do not exist in the library's collection.
+    /// - [`ErrorCode::NotFound`] is returned if any of the types passed do not exist in the library's collection.
     // This makes the doc hidden from cbindgen.
     #[cfg_attr(
         any(doc, rust_analyzer),
         doc = "\n[`ErrorCode::NullPointer`]: crate::ErrorCode::NullPointer\n\
              [`ErrorCode::Alignmenterror`]: crate::ErrorCode::Alignmenterror\n\
              [`ErrorCode::PoisonedLock`]: crate::ErrorCode::PoisonedLock\n\
-             [`ErrorCode::BadTerm`]: crate::ErrorCode::BadTerm"
+             [`ErrorCode::NotFound`]: crate::ErrorCode::NotFound"
     )]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn abc_new_Struct(
@@ -732,7 +1393,7 @@ impl FfiAbcType {
         // Iterate over the fields
         for (pos, ty) in types_slice.iter().enumerate() {
             let Some(Some(matched_ty)) = ty_map.get(ty.id) else {
-                return MaybeAbcType::Error(ErrorCode::BadTerm);
+                return MaybeAbcType::Error(ErrorCode::NotFound);
             };
             let field_name = String::from(match fields_slice[pos].as_opt_str() {
                 Some(s) => s,
@@ -817,7 +1478,7 @@ impl TryFrom<FfiAbcType> for super::Handle<AbcType> {
         let types = Types.read().map_err(|_| ErrorCode::PoisonedLock)?;
         match types.get(t.id) {
             Some(Some(t)) => Ok(t.clone()),
-            _ => Err(ErrorCode::BadTerm),
+            _ => Err(ErrorCode::NotFound),
         }
     }
 }
