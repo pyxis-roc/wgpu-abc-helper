@@ -784,6 +784,16 @@ pub type I32Interval = WrappedInterval<i32>;
 pub type I64Interval = WrappedInterval<i64>;
 pub type U64Interval = WrappedInterval<u64>;
 
+impl<T: IntervalBoundary + std::fmt::Display> WrappedInterval<T> {
+    pub fn pretty_print(&self) -> impl std::fmt::Display {
+        match *self {
+            Self::Empty => "empty".to_string(),
+            Self::Top => "unknown".to_string(),
+            _ => format!("[{}, {}]", self.get_lower().0, self.get_upper().0),
+        }
+    }
+}
+
 impl<T: IntervalBoundary> From<BasicInterval<T>> for WrappedInterval<T> {
     fn from(unit: BasicInterval<T>) -> Self {
         if unit.is_empty() {
@@ -859,6 +869,15 @@ impl BoolInterval {
             (Self::True, Self::True) | (Self::False, Self::False) => Self::False,
             (Self::True, Self::False) | (Self::False, Self::True) => Self::True,
             _ => Self::Unknown,
+        }
+    }
+
+    pub fn pretty_print(&self) -> impl std::fmt::Display {
+        match *self {
+            Self::Empty => "empty",
+            Self::True => "true",
+            Self::False => "false",
+            _ => "unknown",
         }
     }
 }

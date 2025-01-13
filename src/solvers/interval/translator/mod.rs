@@ -110,6 +110,19 @@ pub enum IntervalKind {
     Top,
 }
 
+impl IntervalKind {
+    pub fn pretty_print(&self) -> impl std::fmt::Display {
+        match *self {
+            Self::Bool(b) => b.pretty_print().to_string(),
+            Self::I64(ref i) => i.pretty_print().to_string(),
+            Self::I32(ref i) => i.pretty_print().to_string(),
+            Self::U32(ref u) => u.pretty_print().to_string(),
+            Self::U64(ref u) => u.pretty_print().to_string(),
+            Self::Top => "T".to_string(),
+        }
+    }
+}
+
 impl From<bool> for IntervalKind {
     /// Convert `true` to `IntervalKind::Bool(BoolInterval::True)`, and `false` to `IntervalKind::Bool(BoolInterval::False)`.
     fn from(value: bool) -> Self {
@@ -1441,7 +1454,7 @@ fn get_all_guard_predicates<'a>(
     module
         .global_constraints()
         .iter()
-        .filter_map(crate::Constraint::get_guard)
+        .filter_map(|c| c.0.get_guard())
         .chain(
             module
                 .global_assumptions()
@@ -1470,7 +1483,8 @@ fn get_all_constraints<'a>(
     module
         .global_constraints()
         .iter()
-        .chain(target.constraints.iter())
+        .map(|x| &x.0)
+        .chain(target.constraints.iter().map(|x| &x.0))
 }
 
 fn refine_unguarded_assumptions<'a>(
@@ -1514,19 +1528,15 @@ fn mk_arraylen_types(
 #[rustfmt::skip]  // rustfmt makes this look terrible.
 pub fn enumerate_constraints<'a>(
     module: &'a ConstraintModule, target: &'a Handle<crate::Summary>, fn_idx: u32,
-) -> impl Iterator<Item = (ConstraintId, &'a Constraint)> + 'a {
+) -> impl Iterator<Item = &'a (Constraint, u32)> + 'a {
 
     module
         .global_constraints()
-        .iter()
-        .enumerate()
-        .map(|(idx, item)| (ConstraintId { func: 0, idx: idx as u32}, item))
+        .iter()       
         .chain(
             target
                 .constraints
                 .iter()
-                .enumerate()
-                .map(move |(idx, item)| (ConstraintId { idx: idx as u32, func: fn_idx} , item)),
         )
 }
 /// Translates the constraints in the module, for the given key.
@@ -1539,7 +1549,7 @@ pub fn enumerate_constraints<'a>(
 /// Also propagates errors that occur during the resolution of the constraints.
 pub(crate) fn check_constraints(
     module: &ConstraintModule, idx: u32,
-) -> Result<FastHashMap<ConstraintId, IntervalKind>, SolverError> {
+) -> Result<FastHashMap<u32, Vec<IntervalKind>>, SolverError> {
     // The target is the function that we are trying to prove bounds checks for.
     let target = module
         .summaries
@@ -1577,9 +1587,9 @@ pub(crate) fn check_constraints(
     // Each predicate gets its own resolver.
     let mut predicate_to_resolver: FastHashMap<Handle<Predicate>, Resolver> =
         FastHashMap::default();
-    let mut results = FastHashMap::<ConstraintId, IntervalKind>::default();
+    let mut results = FastHashMap::<u32, Vec<IntervalKind>>::default();
 
-    for (idx, constraint) in enumerate_constraints(module, target, idx) {
+    for (constraint, idx) in enumerate_constraints(module, target, idx) {
         log::trace!("Checking constraint {} (id: {})", constraint, idx);
         if let Some(guard) = constraint.get_guard_ref() {
             let constraint_resolution = if let Some(resolver) = predicate_to_resolver.get(guard) {
@@ -1605,12 +1615,14 @@ pub(crate) fn check_constraints(
             };
 
             log::trace!("Resolved constraint to {:}", constraint_resolution);
-            results.insert(idx, IntervalKind::Bool(constraint_resolution));
+            results
+                .entry(*idx)
+                .or_default()
+                .push(IntervalKind::Bool(constraint_resolution));
         } else {
-            results.insert(
-                idx,
-                IntervalKind::Bool(core_resolver.check_constraint(constraint)?),
-            );
+            results.entry(*idx).or_default().push(IntervalKind::Bool(
+                core_resolver.check_constraint(constraint)?,
+            ));
         }
     }
 
@@ -1885,12 +1897,15 @@ mod test_refine {
             Predicate::new_comparison(crate::CmpOp::Lt, &term_y, &Term::Literal(Literal::U32(5)));
         test_module.type_map.insert(term_y.clone(), u32_handle);
 
-        test_module.global_constraints.push(Constraint::Cmp {
-            guard: Some(Handle::new(less_than_5)),
-            lhs: term_y,
-            rhs: Term::Literal(Literal::U32(10)),
-            op: crate::CmpOp::Lt,
-        });
+        test_module.global_constraints.push((
+            Constraint::Cmp {
+                guard: Some(Handle::new(less_than_5)),
+                lhs: term_y,
+                rhs: Term::Literal(Literal::U32(10)),
+                op: crate::CmpOp::Lt,
+            },
+            0,
+        ));
 
         // refine_intervals_with_assumptions(term_map, assumptions);
 

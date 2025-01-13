@@ -30,8 +30,8 @@ pub enum ConstraintError {
     SummaryError,
     #[error("Attempt to declare the type of a Term a second time.")]
     DuplicateType,
-    #[error("This is not yet implemented")]
-    NotImplemented(String),
+    #[error("{0} is not yet implemented [Line: {1}, file: {2}]")]
+    NotImplemented(String, u32, &'static str),
     #[error("Attempt to end a loop when no loop is active")]
     NotInLoopContext,
     #[error("Maximum loop depth exceeded")]
@@ -101,12 +101,12 @@ where
 
     /// Add a new constraint to the constraint system. Any active predicates are applied to the constraint to "filter" the domain of its expression.
     ///
-    /// The return value represents a unique ID that can be used to reference the constraint.
-    ///
-    /// Note: These will need to be desugared.
+    /// The provided `id` is used to identify the constraint, and acts as a bridge between the user of the constraint system and the solver.
+    /// Solutions to constriants reference this ID.  It is important to note that when invoking a summary via `make_call`, each of the constraints from
+    /// that summary are inserted into the constraint system using the same ID.
     fn add_constraint(
-        &mut self, lhs: &Term, op: ConstraintOp, rhs: &Term,
-    ) -> Result<ConstraintId, Self::E>;
+        &mut self, lhs: &Term, op: ConstraintOp, rhs: &Term, id: u32,
+    ) -> Result<(), Self::E>;
 
     fn declare_type(&mut self, ty: AbcType) -> Result<Self::Handle<AbcType>, Self::E>;
 
@@ -345,14 +345,14 @@ pub struct ConstraintModule {
     /// Types that bave been declared in the helper.
     pub(crate) types: Vec<Handle<AbcType>>,
     /// Global constraints not tied to a function
-    pub(crate) global_constraints: Vec<Constraint>,
+    pub(crate) global_constraints: Vec<(Constraint, u32)>,
     /// Summaries contain the set of summaries that have previously been parsed.
     pub(crate) summaries: Vec<Handle<Summary>>,
 }
 
 impl ConstraintModule {
     #[inline]
-    pub fn global_constraints(&self) -> &[Constraint] {
+    pub fn global_constraints(&self) -> &[(Constraint, u32)] {
         &self.global_constraints
     }
 
@@ -453,7 +453,7 @@ impl ConstraintHelper {
     pub fn solve(
         &self, idx: u32,
     ) -> Result<
-        FastHashMap<ConstraintId, IntervalKind>,
+        FastHashMap<u32, Vec<IntervalKind>>,
         crate::solvers::interval::translator::SolverError,
     > {
         crate::solvers::interval::translator::check_constraints(&self.module, idx)
@@ -513,7 +513,7 @@ impl ConstraintHelper {
     }
 
     /// Get a mutable reference to the active summary's constraints, or the global constraints if there is no active summary.
-    fn get_cur_constraint_vec(&mut self) -> &mut Vec<Constraint> {
+    fn get_cur_constraint_vec(&mut self) -> &mut Vec<(Constraint, u32)> {
         if let Some(ref mut summary) = self.active_summary {
             &mut summary.constraints
         } else {
@@ -811,15 +811,15 @@ impl ConstraintInterface for ConstraintHelper {
         }
         // Add constraints from the summary
 
-        let added_constraints: Vec<Constraint> = func
+        let added_constraints: Vec<(Constraint, u32)> = func
             .constraints
             .iter()
-            .map(|c| c.substitute_multi(&term_vec))
+            .map(|c| (c.0.substitute_multi(&term_vec), c.1))
             .collect();
 
         // Echo the constraints to the output stream.
         for constraint in &added_constraints {
-            self.write(constraint.to_string());
+            self.write(constraint.0.to_string());
         }
         self.get_cur_constraint_vec().extend(added_constraints);
 
@@ -868,7 +868,11 @@ impl ConstraintInterface for ConstraintHelper {
     /// # Errors
     /// `ConstraintError::NotImplemented`
     fn mark_break(&mut self) -> Result<(), Self::E> {
-        Err(ConstraintError::NotImplemented("break".to_string()))
+        Err(ConstraintError::NotImplemented(
+            "break".to_string(),
+            line!(),
+            file!(),
+        ))
     }
 
     /// Mark a continue statement. (Currently unimplemented)
@@ -876,7 +880,11 @@ impl ConstraintInterface for ConstraintHelper {
     /// # Errors
     /// Errors if there is no active loop context.
     fn mark_continue(&mut self) -> Result<(), Self::E> {
-        Err(ConstraintError::NotImplemented("continue".to_string()))
+        Err(ConstraintError::NotImplemented(
+            "continue".to_string(),
+            line!(),
+            file!(),
+        ))
     }
 
     /// Mark the type of the provided term.
@@ -936,8 +944,8 @@ impl ConstraintInterface for ConstraintHelper {
     /// - `MaxConstraintCountExceeded` if the maximum number of constraints has been exceeded.
     #[allow(clippy::cast_possible_truncation)] // summary len can't exceed u32 max.
     fn add_constraint(
-        &mut self, term: &Term, op: ConstraintOp, rhs: &Term,
-    ) -> Result<ConstraintId, Self::E> {
+        &mut self, term: &Term, op: ConstraintOp, rhs: &Term, id: u32,
+    ) -> Result<(), Self::E> {
         // build the predicate. To start with, we have the permanent predicate
         // Then, we have the AND of the current predicate stack.
 
@@ -946,24 +954,12 @@ impl ConstraintInterface for ConstraintHelper {
         // Now we add the constraint.
 
         // This is the unique identifier for the constraint.
-        let id: ConstraintId;
         if let Some(ref mut summary) = self.active_summary {
-            if summary.constraints.len() >= CONSTRAINT_LIMIT {
-                return Err(ConstraintError::ConstraintLimitExceeded);
-            }
-            id = ConstraintId {
-                func: (self.module.summaries.len() as u32) + 1,
-                idx: summary.constraints.len() as u32,
-            };
             &mut summary.constraints
         } else {
-            id = ConstraintId {
-                func: 0,
-                idx: self.module.global_constraints.len() as u32,
-            };
             &mut self.module.global_constraints
         }
-        .push(new_constraint.clone());
+        .push((new_constraint.clone(), id));
         // If this is an equality constraint, then try to mark the type of the term.
         if let Constraint::Cmp {
             op: CmpOp::Eq,
@@ -973,11 +969,11 @@ impl ConstraintInterface for ConstraintHelper {
         } = new_constraint
         {
             match self.mark_type_as_other(lhs, rhs) {
-                Ok(()) | Err(ConstraintError::DuplicateType) => Ok(id),
+                Ok(()) | Err(ConstraintError::DuplicateType) => Ok(()),
                 Err(e) => Err(e),
             }
         } else {
-            Ok(id)
+            Ok(())
         }
     }
 
@@ -1022,6 +1018,8 @@ impl ConstraintInterface for ConstraintHelper {
         else {
             return Err(ConstraintError::NotImplemented(
                 "Assumptions on return values may only be equalities.".into(),
+                line!(),
+                file!(),
             ));
         };
 
@@ -1214,9 +1212,6 @@ impl ConstraintInterface for ConstraintHelper {
 
         // We begin the predicate block here...
         // self.begin_predicate_block(condition);
-        if self.loop_depth != 0 {
-            return Err(ConstraintError::NotImplemented("Nested loops".to_string()));
-        }
         if self.loop_depth == u8::MAX {
             return Err(ConstraintError::MaxLoopDepthExceeded);
         }

@@ -8,7 +8,6 @@
 
 use super::{AbcType, CmpOp, Term};
 use ffi_support::FfiStr;
-use std::borrow::Borrow;
 use std::ffi::{c_char, CString};
 use std::sync::{RwLock, TryLockResult};
 
@@ -215,6 +214,7 @@ pub struct FfiTerm {
 impl FfiTerm {
     /// Convert the `FfiTerm` into a `Term`.
     #[inline]
+    #[allow(dead_code)] // Some helper methods may not be used.
     fn into_term(self) -> Result<Term, ErrorCode> {
         self.try_into()
     }

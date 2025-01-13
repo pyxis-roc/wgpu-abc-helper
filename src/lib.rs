@@ -59,6 +59,7 @@ mod macros;
 use macros::cbindgen_annotate;
 
 pub mod solvers;
+pub use solvers::interval::SolverError;
 
 pub use solvers::interval::{
     translator::IntervalKind, BoolInterval, I32Interval, U32Interval, U64Interval,
@@ -1560,7 +1561,7 @@ pub struct Summary {
     ret_term: Term,
 
     /// Constraints are predicates that must hold for the summary to be valid
-    pub constraints: Vec<Constraint>,
+    pub constraints: Vec<(Constraint, u32)>,
 
     /// Assumptions are predicates that filter out invalid domains
     ///
@@ -1624,8 +1625,8 @@ impl Summary {
     }
 
     /// Add a constraint to the summary.
-    pub fn add_constraint(&mut self, constraint: &Constraint) {
-        self.constraints.push(constraint.clone());
+    pub fn add_constraint(&mut self, constraint: &Constraint, id: u32) {
+        self.constraints.push((constraint.clone(), id));
     }
 
     /// Add an assumption to the summary.
