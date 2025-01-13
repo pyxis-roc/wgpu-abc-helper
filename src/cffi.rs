@@ -9,6 +9,7 @@
 use super::{AbcType, Term};
 use ffi_support::FfiStr;
 use std::ffi::{c_char, CString};
+use std::num::NonZero;
 use std::sync::RwLock;
 
 use lazy_static::lazy_static;
@@ -213,6 +214,22 @@ pub struct FfiTerm {
 }
 
 impl FfiTerm {
+    /// Convert the `FfiTerm` into a `Term`.
+    #[inline]
+    #[allow(dead_code)] // Some helper methods may not be used.
+    fn into_term(self) -> Result<Term, ErrorCode> {
+        self.try_into()
+    }
+
+    /// Convert the `FfiTerm` into a `Term` using the provided term map.
+    /// This is used when the caller already has a lock on `Terms`.
+    fn into_term_with_terms(self, term_map: &[Option<Term>]) -> Result<Term, ErrorCode> {
+        term_map.get(self.id).map_or_else(
+            || Err(ErrorCode::BadTerm),
+            |t| t.clone().map_or_else(|| Err(ErrorCode::BadTerm), Ok),
+        )
+    }
+
     /// Like `new`, except the caller passes in the term map. Used when the caller already has a lock on the terms.
     ///
     /// # Errors
@@ -411,6 +428,245 @@ impl FfiTerm {
                 Self::new_with_terms(Term::new_cast(term, scalar), term_map).into()
             },
         )
+    }
+
+    /// Create a new comparison term, e.g. `x > y`.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid
+    ///
+    /// # Errors
+    /// - [`ErrorCode::NotFound`] is returned if either `lhs` or `rhs` do not exist in the library's collection.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_cmp_term(op: CmpOp, lhs: Self, rhs: Self) -> MaybeTerm {
+        let lhs_term = match lhs.try_into() {
+            Ok(term) => term,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+        let rhs_term = match rhs.try_into() {
+            Ok(term) => term,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+        Self::new(Term::new_cmp_op(op, &lhs_term, &rhs_term)).into()
+    }
+
+    /// Create a new index access term, e.g. `x[y]`.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if either `base` or `index` do not exist in the library's collection.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_index_access(base: Self, index: Self) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let base_term = match base.into_term_with_terms(terms) {
+            Ok(term) => term,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+        let index_term = match index.into_term_with_terms(terms) {
+            Ok(term) => term,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_index_access(&base_term, &index_term), terms).into()
+    }
+
+    /// Create a new struct access term, e.g. `x.y`.
+    ///
+    /// # Arguments
+    /// - `base`: The base term whose field is being accessed
+    /// - `field`: The name of the field being accessed.
+    /// - `ty`: The type of the struct being accessed. This is needed for term validation.
+    /// - `field_idx`: The index of the field in the structure being accessed.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term or type could not be found.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if `base` does not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms or Types container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_struct_access(
+        base: Self, field: FfiStr, ty: FfiAbcType, field_idx: usize,
+    ) -> MaybeTerm {
+        let ty = match ty.try_into() {
+            Ok(ty) => ty,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let base = match base.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        let Some(field) = field.into_opt_string() else {
+            return MaybeTerm::Error(ErrorCode::NullPointer);
+        };
+
+        Self::new_with_terms(Term::new_struct_access(&base, field, ty, field_idx), terms).into()
+    }
+
+    /// Create a new splat term, e.g. `vec3(x)`.
+    ///
+    /// A `splat` is just shorthand for a vector of size `size` where each element is `term`.
+    ///
+    /// # Arguments
+    /// - `term`: The term to splat.
+    /// - `size`: The number of elements in the vector.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_splat(term: Self, size: u32) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let term = match term.into_term_with_terms(terms) {
+            Ok(t) => t,
+            Err(e) => return MaybeTerm::Error(e),
+        };
+
+        Self::new_with_terms(Term::new_splat(term, size), terms).into()
+    }
+
+    /// Create a new literal term.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a new `Literal` variant of `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_literal(lit: Literal) -> MaybeTerm {
+        Self::new(Term::new_literal(lit)).into()
+    }
+
+    /// Create a new vector term.
+    ///
+    /// # Arguments
+    /// - `elements`: A pointer to an array of `FfiTerm`s that are the elements of the vector.
+    /// - `len`: The number of elements in the vector.
+    /// - `ty`: The `kind` of elements in the vector. This must be an `AbcScalar`.  
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a new `Vector` variant of `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Safety
+    /// The caller must ensure that the pointer passed is not null, is properly aligned, and that there are at exactly `len` elements in the array.
+    /// In other words, the safety checks for `from_raw_parts` must be met.
+    ///
+    /// # Errors
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    /// [`ErrorCode::NullPointer`] is returned if the pointer to the elements is null.
+    /// [`ErrorCode::Notfound`] is returned if any of the provided terms do not exist in the library's collection.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn abc_new_vector(
+        elements: *const FfiTerm, len: usize, ty: AbcScalar,
+    ) -> MaybeTerm {
+        if elements.is_null() {
+            return MaybeTerm::Error(ErrorCode::NullPointer);
+        }
+
+        let elements = unsafe { std::slice::from_raw_parts(elements, len) };
+
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let mut term_vec = Vec::with_capacity(len);
+        for element in elements {
+            let term = match element.into_term_with_terms(terms) {
+                Ok(t) => t,
+                Err(e) => return MaybeTerm::Error(e),
+            };
+            term_vec.push(term);
+        }
+
+        Self::new_with_terms(Term::new_vector(&term_vec, ty), terms).into()
+    }
+
+    /// Create a new select term.
+    ///
+    /// # Arguments
+    /// - `condition`: The term representing the condition. This must correspond to a predicate, variable, or an expression that resolves to a boolean, such
+    ///     as an index access or field access.
+    /// - `if_true`: The term that expression resolves to if the condition is true
+    /// - `if_false`: The term that expression resolves to if the condition is false
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either a new `Select` variant of `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    /// [`ErrorCode::NotFound`] is returned if any of the provided terms do not exist in the library's collection.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_select(
+        condition: FfiTerm, if_true: FfiTerm, if_false: FfiTerm,
+    ) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let Ok(term) = condition.into_term_with_terms(terms) else {
+            return MaybeTerm::Error(ErrorCode::NotFound);
+        };
+
+        let Ok(if_true) = if_true.into_term_with_terms(terms) else {
+            return MaybeTerm::Error(ErrorCode::NotFound);
+        };
+
+        let Ok(if_false) = if_false.into_term_with_terms(terms) else {
+            return MaybeTerm::Error(ErrorCode::NotFound);
+        };
+
+        Self::new_with_terms(Term::new_select(&term, &if_true, &if_false), terms).into()
+    }
+
+    /// Create a new `ArrayLength` term. An `ArrayLength` term represents the length of the array, and must only be used
+    /// with terms whose type resolves to `DynamicArray`.
+    ///
+    /// # Arguments
+    /// - `array`: The term representing the array whose length is being accessed.
+    /// - `dim`: The dimension of the array the length term will correspond to. For a 2D array, 0 would correspond to the number of 1D arrays it contains, while 1 would
+    ///     correspond to the number of elements in each 1D array. `dim` must be less than the number of dimensions in the array.
+    /// # Returns
+    /// A `MaybeTerm` which is either a new `ArrayLength` variant of `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
+    /// [`ErrorCode::NotFound`] is returned if the provided term does not exist in the library's collection.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_new_array_length(array: FfiTerm, dim: u8) -> MaybeTerm {
+        let Ok(ref mut terms) = Terms.write() else {
+            return MaybeTerm::Error(ErrorCode::PoisonedLock);
+        };
+
+        let Ok(array) = array.into_term_with_terms(terms) else {
+            return MaybeTerm::Error(ErrorCode::NotFound);
+        };
+        if dim == 0 {
+            Self::new_with_terms(Term::make_array_length(&array), terms)
+        } else {
+            // Safety: dim is checked for non-zero above.
+            Self::new_with_terms(
+                Term::make_array_length_dim(&array, unsafe { NonZero::new_unchecked(dim) }),
+                terms,
+            )
+        }
+        .into()
     }
 }
 
