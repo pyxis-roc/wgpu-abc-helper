@@ -603,6 +603,7 @@ impl Constraint {
     strum_macros::EnumTryAs,
     strum_macros::AsRefStr,
 )]
+
 pub enum Predicate {
     // Conjunction of two predicates, e.g. x && y
     #[strum(to_string = "({0}) && ({1})")]
@@ -926,7 +927,6 @@ impl Predicate {
 /// Enum for different expression kinds
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[cfg_attr(feature = "cffi", repr(C))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, strum_macros::EnumIs)]
 pub enum AbcExpression {
     /// A Vector is a homogenous collection of terms.
@@ -1823,7 +1823,6 @@ impl From<std::num::NonZeroI16> for Literal {
     strum_macros::EnumTryAs,
     strum_macros::AsRefStr,
 )]
-#[cfg_attr(feature = "cffi", repr(C))]
 pub enum Term {
     #[strum(to_string = "{0}")]
     Expr(Handle<AbcExpression>),

@@ -9,7 +9,7 @@
 use super::{AbcType, CmpOp, Term};
 use ffi_support::FfiStr;
 use std::ffi::{c_char, CString};
-use std::sync::{RwLock, TryLockResult};
+use std::sync::RwLock;
 
 use lazy_static::lazy_static;
 
@@ -106,7 +106,7 @@ impl FfiSummary {
     ///
     /// [`ErrorCode::NotFound`]: crate::ErrorCode::NotFound
     /// [`ErrorCode::Success`]: crate::ErrorCode::Success
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_free_summary(&self) -> ErrorCode {
         let r = self.id;
         // functional style! :D
@@ -180,14 +180,14 @@ pub enum ErrorCode {
 
 impl super::CmpOp {
     #[must_use]
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_negate(&self) -> Self {
         self.negation()
     }
 }
 
 impl super::CmpOp {
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_as_ConstraintOp(self) -> super::ConstraintOp {
         self.into()
     }
@@ -195,7 +195,7 @@ impl super::CmpOp {
 
 impl super::ConstraintOp {
     /// Conversion method to convert a `ConstraintOp` to a `CmpOp`
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_from_CmpOp(value: super::CmpOp) -> Self {
         value.into()
     }
@@ -300,7 +300,7 @@ Implementation of predicate constructors for term
 */
 impl FfiTerm {
     /// Create a new unit predicate
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_unit_pred(p: Self) -> MaybeTerm {
         let p: Result<Term, ErrorCode> = p.try_into();
         match p {
@@ -309,19 +309,19 @@ impl FfiTerm {
         }
     }
     /// Create a Term holding the `true` predicate
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_literal_true() -> MaybeTerm {
         Self::new(Term::new_literal_true()).into()
     }
 
     /// Create a Term holding the `false` predicate
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_literal_false() -> MaybeTerm {
         Self::new(Term::new_literal_false()).into()
     }
 
     /// Creates lhs && rhs
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_logical_and(lhs: Self, rhs: Self) -> MaybeTerm {
         let lhs: Result<Term, ErrorCode> = lhs.try_into();
         let rhs: Result<Term, ErrorCode> = rhs.try_into();
@@ -335,7 +335,7 @@ impl FfiTerm {
     ///
     /// Returns a `MaybeTerm`, which is either a `Term` if the term was successfully created,
     /// or `NotFound` if the provided terms were not valid.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_logical_or(lhs: Self, rhs: Self) -> MaybeTerm {
         let lhs: Result<Term, ErrorCode> = lhs.try_into();
         let rhs: Result<Term, ErrorCode> = rhs.try_into();
@@ -346,7 +346,7 @@ impl FfiTerm {
     }
 
     /// Constructs lhs `op` rhs
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_comparison(op: super::CmpOp, lhs: Self, rhs: Self) -> MaybeTerm {
         let lhs: Result<Term, ErrorCode> = lhs.try_into();
         let rhs: Result<Term, ErrorCode> = rhs.try_into();
@@ -361,7 +361,7 @@ impl FfiTerm {
     /// If `t` is already a [`Predicate::Not`], then it removes the `!`
     ///
     /// [`Predicate::Not`]: crate::Predicate::Not
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_not(t: Self) -> MaybeTerm {
         let t: Result<Term, ErrorCode> = t.try_into();
         match t {
@@ -398,7 +398,7 @@ impl FfiTerm {
     /// - [`ErrorCode::NullPointer`] is returned if the string passed is null.
     /// - [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
     #[allow(clippy::needless_pass_by_value)] // We do want to pass by value here, actually.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_var(s: FfiStr) -> MaybeTerm {
         match s.as_opt_str() {
             Some(s) => Self::new(Term::new_var(s)).into(),
@@ -425,7 +425,7 @@ impl FfiTerm {
                 [`MaybeTerm::Error`]: crate::MaybeTerm::Error\n\
                 [`ErrorCode::WrongType`]: crate::ErrorCode::WrongType"
     )]
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_cast(source_term: Self, ty: FfiAbcType) -> MaybeTerm {
         let resolved_type = match Self::get_scalar_type(ty) {
             Ok(s) => s,
@@ -451,7 +451,7 @@ impl FfiTerm {
     ///
     /// # Errors
     /// - [`ErrorCode::NotFound`] is returned if either `lhs` or `rhs` do not exist in the library's collection.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_cmp_term(op: CmpOp, lhs: Self, rhs: Self) -> MaybeTerm {
         let lhs_term = match lhs.try_into() {
             Ok(term) => term,
@@ -471,7 +471,7 @@ impl FfiTerm {
     ///
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if either `base` or `index` do not exist in the library's collection.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_index_access(base: Self, index: Self) -> MaybeTerm {
         let Ok(ref mut terms) = Terms.write() else {
             return MaybeTerm::Error(ErrorCode::PoisonedLock);
@@ -503,7 +503,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if `base` does not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms or Types container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_struct_access(
         base: Self, field: FfiStr, ty: FfiAbcType, field_idx: usize,
     ) -> MaybeTerm {
@@ -543,7 +543,7 @@ impl FfiTerm {
     /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
     /// [`ErrorCode::ValueError`] is returned if `size` is not between 2 and 4.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_splat(term: Self, size: u32) -> MaybeTerm {
         if size < 2 || size > 4 {
             return MaybeTerm::Error(ErrorCode::ValueError);
@@ -567,7 +567,7 @@ impl FfiTerm {
     ///
     /// # Errors
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_literal(lit: Literal) -> MaybeTerm {
         Self::new(Term::new_literal(lit)).into()
     }
@@ -580,7 +580,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if either `lhs` or `rhs` do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_binary_op(op: super::BinaryOp, lhs: Self, rhs: Self) -> MaybeTerm {
         let Ok(ref mut terms) = Terms.write() else {
             return MaybeTerm::Error(ErrorCode::PoisonedLock);
@@ -607,7 +607,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_unary_op(op: super::UnaryOp, term: Self) -> MaybeTerm {
         let Ok(ref mut terms) = Terms.write() else {
             return MaybeTerm::Error(ErrorCode::PoisonedLock);
@@ -629,7 +629,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if either `lhs` or `rhs` do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_max(lhs: Self, rhs: Self) -> MaybeTerm {
         let Ok(ref mut terms) = Terms.write() else {
             return MaybeTerm::Error(ErrorCode::PoisonedLock);
@@ -656,7 +656,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if either `lhs` or `rhs` do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_min(lhs: Self, rhs: Self) -> MaybeTerm {
         let Ok(ref mut terms) = Terms.write() else {
             return MaybeTerm::Error(ErrorCode::PoisonedLock);
@@ -691,7 +691,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if either `lhs`, `m`, or `rhs` do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_select(iftrue: Self, iffalse: Self, predicate: Self) -> MaybeTerm {
         let Ok(ref mut terms) = Terms.write() else {
             return MaybeTerm::Error(ErrorCode::PoisonedLock);
@@ -752,7 +752,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if either of the terms or the type does not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_vec2(term_0: Self, term_1: Self, ty: FfiAbcType) -> MaybeTerm {
         Self::new_vec_helper(&[term_0, term_1], ty, false).into()
     }
@@ -771,7 +771,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if either of the terms or the type does not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_vec3(
         term_0: Self, term_1: Self, term_2: Self, ty: FfiAbcType,
     ) -> MaybeTerm {
@@ -793,7 +793,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if either of the terms or the type does not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_vec4(
         term_0: Self, term_1: Self, term_2: Self, term_3: Self, ty: FfiAbcType,
     ) -> MaybeTerm {
@@ -817,7 +817,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_array_length(term: Self) -> MaybeTerm {
         let Ok(ref mut terms) = Terms.write() else {
             return MaybeTerm::Error(ErrorCode::PoisonedLock);
@@ -848,7 +848,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_store(term: Self, index: Self, value: Self) -> MaybeTerm {
         let Ok(ref mut terms) = Terms.write() else {
             return MaybeTerm::Error(ErrorCode::PoisonedLock);
@@ -889,7 +889,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_struct_store(term: Self, field_idx: usize, value: Self) -> MaybeTerm {
         let Ok(ref mut terms) = Terms.write() else {
             return MaybeTerm::Error(ErrorCode::PoisonedLock);
@@ -919,7 +919,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if `term` does not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_abs(term: Self) -> MaybeTerm {
         let Ok(ref mut terms) = Terms.write() else {
             return MaybeTerm::Error(ErrorCode::PoisonedLock);
@@ -945,7 +945,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if either `base` or `exponent` do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_pow(base: Self, exponent: Self) -> MaybeTerm {
         let Ok(ref mut terms) = Terms.write() else {
             return MaybeTerm::Error(ErrorCode::PoisonedLock);
@@ -976,7 +976,7 @@ impl FfiTerm {
     /// # Errors
     /// [`ErrorCode::NotFound`] is returned if either `lhs` or `rhs` do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_dot(lhs: Self, rhs: Self) -> MaybeTerm {
         let Ok(ref mut terms) = Terms.write() else {
             return MaybeTerm::Error(ErrorCode::PoisonedLock);
@@ -1012,7 +1012,7 @@ impl FfiTerm {
     /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
     /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_mat2x2(row_0: Self, row_1: Self, ty: FfiAbcType) -> MaybeTerm {
         Self::new_vec_helper(&[row_0, row_1], ty, true).into()
     }
@@ -1034,7 +1034,7 @@ impl FfiTerm {
     /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
     /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_mat2x3(row_0: Self, row_1: Self, ty: FfiAbcType) -> MaybeTerm {
         Self::new_vec_helper(&[row_0, row_1], ty, true).into()
     }
@@ -1056,7 +1056,7 @@ impl FfiTerm {
     /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
     /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_mat2x4(row_0: Self, row_1: Self, ty: FfiAbcType) -> MaybeTerm {
         Self::new_vec_helper(&[row_0, row_1], ty, true).into()
     }
@@ -1079,7 +1079,7 @@ impl FfiTerm {
     /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
     /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_mat3x2(
         row_0: Self, row_1: Self, row_2: Self, ty: FfiAbcType,
     ) -> MaybeTerm {
@@ -1104,7 +1104,7 @@ impl FfiTerm {
     /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
     /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_mat3x3(
         row_0: Self, row_1: Self, row_2: Self, ty: FfiAbcType,
     ) -> MaybeTerm {
@@ -1129,7 +1129,7 @@ impl FfiTerm {
     /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
     /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_mat3x4(
         row_0: Self, row_1: Self, row_2: Self, ty: FfiAbcType,
     ) -> MaybeTerm {
@@ -1155,7 +1155,7 @@ impl FfiTerm {
     /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
     /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_mat4x2(
         row_0: Self, row_1: Self, row_2: Self, row_3: Self, ty: FfiAbcType,
     ) -> MaybeTerm {
@@ -1181,7 +1181,7 @@ impl FfiTerm {
     /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
     /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_mat4x3(
         row_0: Self, row_1: Self, row_2: Self, row_3: Self, ty: FfiAbcType,
     ) -> MaybeTerm {
@@ -1207,7 +1207,7 @@ impl FfiTerm {
     /// [`ErrorCode::NotFound`] is returned if any of the rows or the type do not exist in the library's collection.
     /// [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms container is poisoned.
     /// [`ErrorCode::WrongType`] is returned if the type passed is not a scalar type.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_mat4x4(
         row_0: Self, row_1: Self, row_2: Self, row_3: Self, ty: FfiAbcType,
     ) -> MaybeTerm {
@@ -1220,7 +1220,7 @@ impl FfiTerm {
     ///
     /// If the term is invalid, <NotFound> is returned.
     /// Note: The returned `c_string` MUST be freed by the caller, by calling `free_string` or this will lead to a memory leak.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_term_to_cstr(self) -> *mut c_char {
         let term: Result<Term, ErrorCode> = self.try_into();
         // Unsafe guarantees here:
@@ -1251,7 +1251,7 @@ impl FfiTerm {
     doc = "\n[`abc_term_to_cstr`]: crate::FfiTerm::abc_term_to_cstr"
 )]
 #[allow(unused_must_use)] // We are only dropping the string, so we don't care about the result.
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub unsafe extern "C" fn abc_free_string(s: *mut c_char) {
     unsafe {
         CString::from_raw(s);
@@ -1303,7 +1303,7 @@ impl FfiAbcType {
     ///
     ///
     /// That is, calling `delete` will just remove the type from the library's collection.
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_free_type(&self) -> ErrorCode {
         let r = self.id;
         // functional style! :D
@@ -1326,7 +1326,7 @@ impl FfiAbcType {
 }
 
 impl FfiAbcType {
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_Scalar(scalar: AbcScalar) -> MaybeAbcType {
         Self::new(AbcType::Scalar(scalar)).into()
     }
@@ -1357,7 +1357,7 @@ impl FfiAbcType {
              [`ErrorCode::PoisonedLock`]: crate::ErrorCode::PoisonedLock\n\
              [`ErrorCode::NotFound`]: crate::ErrorCode::NotFound"
     )]
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub unsafe extern "C" fn abc_new_Struct(
         fields: *mut FfiStr, types: *const FfiAbcType, len: usize,
     ) -> MaybeAbcType {
@@ -1424,7 +1424,7 @@ impl FfiAbcType {
                 [`ErrorCode::NotFound`]: crate::ErrorCode::NotFound\n\
                 [`ErrorCode::ForbiddenZero`]: crate::ErrorCode::ForbiddenZero"
     )]
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_SizedArray(ty: FfiAbcType, size: u32) -> MaybeAbcType {
         // Unlock the types struct
         if size == 0 {
@@ -1458,7 +1458,7 @@ impl FfiAbcType {
                 [`ErrorCode::NotFound`]: crate::ErrorCode::NotFound\n\
                 [`ErrorCode::ForbiddenZero`]: crate::ErrorCode::ForbiddenZero"
     )]
-    #[unsafe(no_mangle)]
+    #[no_mangle]
     pub extern "C" fn abc_new_DynamicArray(ty: FfiAbcType) -> MaybeAbcType {
         let Ok(ty_map) = Types.write() else {
             return MaybeAbcType::Error(ErrorCode::PoisonedLock);
