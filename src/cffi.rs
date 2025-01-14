@@ -221,13 +221,10 @@ impl FfiTerm {
 
     /// Convert the `FfiTerm` into a `Term` using the provided term map.
     /// This is used when the caller already has a lock on `Terms`.
-    fn into_term_with_terms(self, term_map: &Vec<Option<Term>>) -> Result<Term, ErrorCode> {
+    fn into_term_with_terms(self, term_map: &[Option<Term>]) -> Result<Term, ErrorCode> {
         term_map.get(self.id).map_or_else(
             || Err(ErrorCode::NotFound),
-            |t| {
-                t.clone()
-                    .map_or_else(|| Err(ErrorCode::NotFound), |t| Ok(t))
-            },
+            |t| t.clone().map_or_else(|| Err(ErrorCode::NotFound), Ok),
         )
     }
 
@@ -545,7 +542,7 @@ impl FfiTerm {
     /// [`ErrorCode::ValueError`] is returned if `size` is not between 2 and 4.
     #[no_mangle]
     pub extern "C" fn abc_new_splat(term: Self, size: u32) -> MaybeTerm {
-        if size < 2 || size > 4 {
+        if !(2..=4).contains(&size) {
             return MaybeTerm::Error(ErrorCode::ValueError);
         }
         let Ok(ref mut terms) = Terms.write() else {
@@ -731,7 +728,7 @@ impl FfiTerm {
         }
 
         let new_term = if is_matrix {
-            Term::new_vector(&resolved_components, resolved_type)
+            Term::new_matrix(&resolved_components, resolved_type)
         } else {
             Term::new_vector(&resolved_components, resolved_type)
         };
