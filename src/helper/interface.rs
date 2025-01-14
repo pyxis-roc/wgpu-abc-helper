@@ -456,8 +456,8 @@ impl ConstraintHelper {
         FastHashMap<u32, Vec<IntervalKind>>,
         crate::solvers::interval::translator::SolverError,
     > {
+        #[allow(clippy::useless_conversion)]
         crate::solvers::interval::translator::check_constraints(&self.module, idx)
-            .map_err(Into::into)
         // Now, we map the results back to the constraints.
     }
     /// Write the constraints for the module to the provided stream

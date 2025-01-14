@@ -113,7 +113,7 @@ impl FfiSummary {
         Summaries.write().map_or_else(
             |_| ErrorCode::PoisonedLock,
             |mut summaries| {
-                summaries.get_mut(r).take().map_or_else(
+                summaries.get_mut(r).map_or_else(
                     || ErrorCode::NotFound,
                     |_| match ReusableSummaryIds.lock() {
                         Ok(mut ids) => {
@@ -1307,7 +1307,7 @@ impl FfiAbcType {
         Types.write().map_or_else(
             |_| ErrorCode::PoisonedLock,
             |mut types| {
-                types.get_mut(r).take().map_or_else(
+                types.get_mut(r).map_or_else(
                     || ErrorCode::NotFound,
                     |_| match ReusableTypeIds.lock() {
                         Ok(mut ids) => {
