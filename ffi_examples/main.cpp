@@ -12,17 +12,21 @@
 int main()
 {
     // Make a new term that is literal True
-    abc_helper::MaybeTerm term = abc_helper::abc_new_literal_true();
-    if (term.tag == abc_helper::MaybeTerm::Tag::Success)
+    abc_helper::Context ctx = abc_helper::abc_new_context().AsSuccess();
+
+    abc_helper::MaybeTerm term = ctx.new_literal_true();
+
+    if (term.IsSuccess())
     {
-        auto term_inner = term.success._0;
-        auto term_text = abc_helper::abc_term_to_cstr(term_inner);
+        auto term_inner = term.AsSuccess();
+        auto term_text = ctx.term_to_cstr(term_inner);
         std::cout << "Term text: " << term_text << std::endl;
         abc_helper::abc_free_string(term_text);
     }
     else
     {
-        std::cout << "Error: " << (int)term.error._0 << std::endl;
+        std::cerr << "Error: " << (int)term.error._0 << std::endl;
+        return EXIT_FAILURE;
     }
 
     // Print the term.

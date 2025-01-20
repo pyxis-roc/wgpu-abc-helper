@@ -50,9 +50,6 @@ type FastHashSet<K> = rustc_hash::FxHashSet<K>;
 
 use lazy_static::lazy_static;
 
-#[cfg(feature = "cffi")]
-pub mod cffi;
-
 #[doc(hidden)]
 mod macros;
 #[doc(hidden)]
@@ -590,6 +587,7 @@ impl Constraint {
     }
 }
 
+cbindgen_annotate! {"ignore"
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(
@@ -603,7 +601,6 @@ impl Constraint {
     strum_macros::EnumTryAs,
     strum_macros::AsRefStr,
 )]
-
 pub enum Predicate {
     // Conjunction of two predicates, e.g. x && y
     #[strum(to_string = "({0}) && ({1})")]
@@ -628,6 +625,7 @@ pub enum Predicate {
     /// The literal True predicate.
     #[strum(to_string = "true")]
     True,
+}
 }
 
 impl Predicate {
@@ -2423,3 +2421,8 @@ mod test {
         assert_eq!(constraint2.to_string(), "z == w");
     }
 }
+
+// This is intentionally placed at the end of the file in order for cbindgen to properly declare the bindings in this file
+// before the bindings in the other files, which require these to be defined first.
+#[cfg(feature = "cffi")]
+pub mod cffi;

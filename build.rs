@@ -110,6 +110,9 @@ fn main() {
             return;
         }
         println!("cargo:rerun-if-changed=src/cffi.rs");
+        println!("cargo:rerun-if-changed=ffi_headers/abc_footer_defns.hpp");
+        println!("cargo:rerun-if-changed=ffi_headers/abc_forward_decls.hpp");
+        println!("cargo:rerun-if-changed=cbindgen.toml");
 
         let crate_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
 
@@ -122,6 +125,17 @@ fn main() {
             .join("include")
             .join("wgpu_abc_helper.hpp");
 
+        let forward_decl_target = std::path::Path::new(&target_dir)
+            .join(&profile)
+            .join("include")
+            .join("abc_forward_decls.hpp");
+
+        println!("Generating C/C++ header file at {}", output_file.display());
+        println!(
+            "Generating forward declarations file at {}",
+            forward_decl_target.display()
+        );
+
         // We need to turn on RUSTC_BOOTSTRAP, because cbindgen's expand uses the unstable `-Zunpretty=expanded`
         // flag of rustc, which requires unstable options.
         // So, we temporarily set the environment variable RUSTC_BOOTSTRAP to 1 just before invoking
@@ -133,8 +147,14 @@ fn main() {
             std::env::set_var("RUSTC_BOOTSTRAP", "1");
         }
 
+        let mut config = cbindgen::Config::from_root_or_default(crate_dir.clone());
+
+        // Read the file and add the contents to the config.
+        config.trailer = Some(include_str!("ffi_headers/abc_footer_defns.hpp").to_string());
+        config.after_includes = Some(include_str!("ffi_headers/abc_forward_decls.hpp").to_string());
+
         // From https://github.com/mozilla/cbindgen/issues/472#issuecomment-831439826
-        match cbindgen::generate(&crate_dir) {
+        match cbindgen::generate_with_config(&crate_dir, config) {
             Ok(bindings) => bindings.write_to_file(output_file),
             // During development..
             Err(cbindgen::Error::ParseSyntaxError { .. }) => return, // ignore in favor of cargo's syntax check

@@ -30,7 +30,7 @@ use ops::{Intersect, IntersectAssign, IntervalMax, IntervalMin, Union};
 
 pub use translator::SolverError;
 
-use crate::FastHashSet;
+use crate::{macros::cbindgen_annotate, FastHashSet};
 
 /// A supertrait allowing the type to be used as an element of `Interval`
 pub trait IntervalBoundary:
@@ -437,7 +437,6 @@ impl<T: IntervalBoundary> Interval for BasicInterval<T> {
         self.lower > self.upper
     }
 }
-
 /// A wrapper around an interval. The interval is either a unit interval or a union of intervals.
 #[derive(Clone, Debug, Eq)]
 pub enum WrappedInterval<T: IntervalBoundary> {
