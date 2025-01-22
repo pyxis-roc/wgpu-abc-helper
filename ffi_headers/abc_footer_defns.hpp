@@ -649,11 +649,10 @@ namespace abc_helper
         return abc_term_to_cstr(*this, term);
     }
 
-
-    /// Create a new scalar type. Takes a list of fields, each of which is a tuple of a string and an `AbcType`.
+    /// Create a new scalar type as an `FfiAbcType` from an `AbcScalar`.
     ///
     /// # Arguments
-    /// - `width` is the number of 
+    /// - `scalar` The constructed scalar.
     ///
     /// # Safety
     /// The caller must ensure that the `fields` and `types` pointers are not null, and that the `len`
@@ -668,28 +667,12 @@ namespace abc_helper
     /// - `ErrorCode::Alignmenterror` if the pointers are not properly aligned.
     /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
     /// - `ErrorCode::InvalidType` if any of the types passed do not exist the context.
-    MaybeAbcType Context::new_Scalar_type(uint8_t width, AbcScalar::Tag tag) {
-        AbcScalar scalar;
-        switch (tag) {
-            case AbcScalar::Tag::Sint:
-                scalar = AbcScalar::Sint(width);
-                break;
-            case AbcScalar::Tag::Uint:
-                scalar = AbcScalar::Uint(width);
-                break;
-            case AbcScalar::Tag::Float:
-                scalar = AbcScalar::Float(width);
-                break;
-            case AbcScalar::Tag::Bool:
-                scalar = AbcScalar::Bool();
-                break;
-            case AbcScalar::Tag::AbstractInt:
-                scalar = AbcScalar::AbstractInt();
-                break;
-            case AbcScalar::Tag::AbstractFloat:
-                scalar = AbcScalar::AbstractFloat();
-                break;
-        }
+    ///
+    /// Example:
+    /// ```cpp
+    /// context.new_Scalar_type(AbcScalar::Sint(4));
+    /// ```
+    MaybeAbcType Context::new_Scalar_type(AbcScalar scalar) {
         return abc_new_Scalar_type(*this, scalar);
     }
 
@@ -732,5 +715,357 @@ namespace abc_helper
     /// - `ErrorCode::ForbiddenZero` is returned if the size is 0.
     MaybeAbcType Context::new_DynamicArray_type(FfiAbcType ty) {
         return abc_new_DynamicArray_type(*this, ty);
+    }
+
+
+
+    /// Solve the constraints for the provided summary.
+    ///
+    /// Note that the returned solution *must be freed* by calling `abc_free_solution` otherwise
+    /// a memory leak will occur.
+    ///
+    /// This will return an `FfiSolution` which contains the results.
+    /// The results are in the form (id, bool). `id` corresponds to the
+    /// id of the constraint that was provided when the constraint was added.
+    /// the `bool` corresponds to the result of the constraint. It is `true`
+    /// if the constraint is always satisfied. In this case, the bounds check
+    /// can be removed. `false` means that the constraint could not
+    /// be proven to always be satisfied. In this case, the bounds check
+    /// must be kept.
+    ///
+    /// In this current implementation, there is not a distinction
+    /// between checks that are always violated and checks that may be violated.
+    ///
+    ///
+    /// # Errors
+    /// - `SolverErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `SolverErrorCode::InvalidContext` if the context does not exist.
+    /// - `SolverErrorCode::InvalidSummary` if the summary does not exist in the context.
+    /// - Many other errors may be returned that occur during the solving process.
+    MaybeSolution Context::solve_constraints(FfiSummary summary) {
+        return abc_solve_constraints(*this, summary);
+    }
+
+    /// Serializes the constraint system to json.
+    /// The input should be a file path where the serialized json will be written.
+    ErrorCode Context::serialize_constraints(const char* path) {
+        return abc_serialize_constraints(*this, path);
+    }
+
+    /// Mark a variable as a loop variable.
+    ///
+    /// A loop variable is any variable that is updated within a loop. Supported operations
+    /// are limited to binary operations. For best results, the increment / decrement term must be
+    /// a constnat.
+    ///
+    /// # Arguments
+    /// - `var`: The induction variable.
+    /// - `init`: The expression the induction variable is initialized to.
+    /// - `update_rhs`: The expression that the term is incremented / decremented by
+    /// - `update_op`: The operation that is used to update the term.
+    ///
+    /// Note that `inc_term` and `inc_op` are parts of the expression with the induction term.
+    /// That is, only expressions of the form `a = a op b` are allowed, where `a` is the induction variable.
+    /// This method should come **before** the `begin_loop` call.
+    ///
+    /// # Errors
+    /// - `ErrorCode::InvalidTerm` if any of the terms passed are invalid.
+    /// - `ErrorCode::UnsupportedOperation` if the operation is not supported for loops.
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    ErrorCode Context::mark_loop_variable(FfiTerm var, FfiTerm init, FfiTerm update_rhs, BinaryOp update_op) {
+        return abc_mark_loop_variable(*this, var, init, update_rhs, update_op);
+    }
+
+    /// Add the constraints of the summary by invoking the function call with the proper arguments.
+    ///
+    ///
+    /// # Arguments
+    /// - `summary`: The summary for the function being invoked
+    /// - `args`: An array containing the arguments that are passed to the function.
+    /// - `num_args`: The size of the `args` array.
+    /// - `return_dest`: A fresh variable term that will hold the return value. If the return value is not used,
+    /// then this must be the `Empty` term.
+    ///
+    /// This will add the constraints of the summary to the constraint system, with
+    /// the arguments substituted with `args`, and the return value substituted with `return_dest`.
+    ///
+    /// # Safety
+    /// The caller must ensure that `args` holds at least `num_args` elements.
+    ///
+    /// # Errors
+    /// - `ErrorCode::NullPointer` if `args` is null and `num_args` is not 0.
+    /// - `ErrorCode::AlignmentError` if `args` is not properly aligned.
+    /// - `ErrorCode::InvalidTerm` if any of the terms passed do not exist in the context.
+    /// - `ErrorCode::InvalidSummary` if the summary does not exist in the context.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    MaybeTerm Context::new_call(FfiSummary summary, const FfiTerm *args, uint32_t num_args, FfiTerm return_dest) {
+        return abc_new_call(*this, summary, args, num_args, return_dest);
+    }
+
+    /// Begins a loop context.
+    ///
+    /// A loop context is akin to a predicate context. It allows for the convenience methods for `break` and `continue`
+    /// to be properly handled. Additionally, all updates to variables within are marked as range constraints.
+    ///
+    /// The `condition` should correspond to a boolean term where one of the operands has been marked as a loop variable.
+    ///
+    /// # Errors
+    /// - `ErrorCode::InvalidTerm` if the term does not exist in the context.
+    /// - `ErrorCode::UnsupportedLoopCondition` if the condition is not a `Predicate` or `Var` term.
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    ErrorCode Context::begin_loop(FfiTerm condition) {
+        return abc_begin_loop(*this, condition);
+    }
+
+    /// End a loop context.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::NotInLoopcontext` if there has been no matching call to `begin_loop`.
+    ErrorCode Context::end_loop() {
+        return abc_end_loop(*this);
+    }
+
+    /// Mark an assumption.
+    ///
+    /// Assumptions are invariants that must hold at all times.
+    /// At solving time, these differ from constraints in that they are not inverted
+    /// to test for satisfiability.
+    ///
+    /// # Arguments
+    /// - `lhs`: The left hand side of the assumption.
+    /// - `op`: The operation that is used to compare the terms.
+    /// - `rhs`: The right hand side of the assumption.
+    ///
+    /// There can only be one assumption per direction for each term. That is,
+    /// each term may *either* have one equality assumption (:=) *or* one
+    ///  inequality assumption per direction (one less / less equal, one
+    /// greater / greater equal). Violating this will result in a
+    /// `DuplicateAssumption` error.
+    ///
+    /// # Errors
+    /// - `ErrorCode::InvalidTerm` if any term does not exist in the context.
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::DuplicateAssumption` if `lhs` has already had an assumption on the specified boundary.
+    ErrorCode Context::add_assumption(FfiTerm lhs, AssumptionOp op, FfiTerm rhs) {
+        return abc_add_assumption(*this, lhs, op, rhs);
+    }
+
+    /// Begin a summary block.
+    ///
+    /// A summary block corresponds to a function definition. All constraints
+    /// that are added within the summary block are considered to be constraints
+    /// of the function.
+    ///
+    /// A summary block must be ended with a call to `end_summary`, which will
+    /// provide the `FfiSummary` that can be used to refer to it.
+    ///
+    /// # Arguments
+    /// - `name`: The name of the function.
+    /// - `num_args`: The number of arguments the function takes.
+    ///
+    /// # Errors
+    /// - `ErrorCode::NullPointer` if `name` is null.
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::SummaryLimitExceeded` if the number of summaries exceeds the limit.
+    ErrorCode Context::begin_summary(const char* name, uint8_t num_args) {
+        return abc_begin_summary(*this, name, num_args);
+    }
+
+    /// End a summary block.
+    ///
+    /// This will return the `FfiSummary` that can be used to refer to the summary.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::NotInSummary` if there has been no matching call to `begin_summary`.
+    MaybeSummary Context::end_summary() {
+        return abc_end_summary(*this);
+    }
+
+    /// Add an argument to the active summary.
+    ///
+    /// The `begin_summary` method must be called before this method.
+    ///
+    /// # Arguments
+    /// - `name`: The name of the argument.
+    /// - `ty`: The type of the argument.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either an `FfiTerm` if the argument was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// - `ErrorCode::NullPointer` if `name` is null.
+    /// - `ErrorCode::InvalidType` if the type does not exist in the context.
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::NotInSummary` if there has been no matching call to `begin_summary`.
+    MaybeTerm Context::add_argument(const char* name, FfiAbcType ty) {
+        return abc_add_argument(*this, name, ty);
+    }
+
+    /// Mark a break statement. (Currently unimplemented)
+    ///
+    /// # Errors
+    /// `ConstraintError::NotImplemented`
+    ErrorCode Context::mark_break() {
+        return abc_mark_break(*this);
+    }
+
+    /// Mark a continue statement. (Currently unimplemented)
+    ///
+    /// # Errors
+    /// `ConstraintError::NotImplemented`
+    ErrorCode Context::mark_continue() {
+        return abc_mark_continue(*this);
+    }
+
+    /// Mark the type of the provided term.
+    ///
+    /// # Errors
+    /// [`DuplicateType`] if the type of the term has already been marked.
+    ///
+    /// [`DuplicateType`]: crate::ConstraintError::DuplicateType
+    ErrorCode Context::mark_type(FfiTerm term, FfiAbcType ty) {
+        return abc_mark_type(*this, term, ty);
+    }
+
+    /// Begin a predicate block. This indicates to the solver
+    /// that all expressions that follow can be filtered by the predicate.
+    /// Any constraint that falls within a predicate becomes a soft constraint
+    ///
+    /// In other words, it would be as if all constraints were of the form
+    /// ``p -> c``
+    /// Nested predicate blocks end up composing the predicates. E.g.,
+    /// ``begin_predicate_block(p1)`` followed by ``begin_predicate_block(p2)``
+    /// would mark all constraints as ``p1 && p2 -> c``
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidTerm` if the term does not exist in the context.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    ErrorCode Context::begin_predicate_block(FfiTerm predicate) {
+        return abc_begin_predicate_block(*this, predicate);
+    }
+
+    /// End the active predicate block.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::PredicateStackEmpty` if there is no active predicate block.
+    ErrorCode Context::end_predicate_block() {
+        return abc_end_predicate_block(*this);
+    }
+
+    /// Add a constraint to the system that narrows the domain of `term`.
+    ///
+    /// Any active predicates are automatically applied.
+    ///
+    /// There can only be one constraint per boundary side for each term. That is,
+    /// each term may *either* have one equality constraint (:=) *or* one
+    /// inequality constraint per side (one less / less equal, one
+    /// greater / greater equal). Violating this will result in a
+    /// `DuplicateConstraint` error.
+    ///
+    /// # Arguments
+    /// - `lhs`: The left hand side of the constraint.
+    /// - `op`: The operation of the constraint.
+    /// - `rhs`: The right hand side of the constraint.
+    /// - `id`: The identifier that the constraint system will use to refer to
+    /// the constraint. Results will reference this id.
+    ///
+    ///
+    /// # Errors
+    /// - `TypeMismatch` if the type of `term` is different from the type of
+    /// `rhs` and `op` is `ConstraintOp::Assign`
+    /// - `MaxConstraintCountExceeded` if the maximum number of constraints has
+    /// been exceeded.
+    ErrorCode Context::add_constraint(FfiTerm lhs, ConstraintOp op, FfiTerm rhs, uint32_t id) {
+        return abc_add_constraint(*this, lhs, op, rhs, id);
+    }
+
+    /// Mark a return statement.
+    ///
+    /// # Arguments
+    /// - `retval`: The term that corresponds to the return value. If no value
+    /// is returned, this *must* be the `Empty` term.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidTerm` if the term does not exist in the context.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    ErrorCode Context::mark_return(FfiTerm retval) {
+        return abc_mark_return(*this, retval);
+    }
+
+    /// Mark the length of an array's dimension. Only valid for dynamically
+    /// sized arrays.
+    ///
+    ///
+    /// It is *strongly* preferred to use the type system to mark the variable as
+    /// a `SizedArray` type.
+    /// This should *only* be used for dynamic arrays whose size is determined later.
+    ///
+    /// # Arguments
+    /// - `term`: The array term to mark the dimension of
+    /// - `dim`: The term that corresponds to the 0-based dimension of the array.
+    /// - `size`: The size of the array.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidTerm` if the term does not exist in the context.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    ErrorCode Context::mark_array_length(FfiTerm term, uint8_t dim, uint32_t size) {
+        return abc_mark_array_length(*this, term, dim, size);
+    }
+    
+    /// Mark the range of a runtime constant. Sugar for a pair of assumptions
+    /// (var >= min) and (var <= max).
+    ///
+    /// The `lower` and `upper` terms must be literals of the same type.
+    ///
+    /// ## Notes
+    /// - The current predicate block is ignored, though the constraints *are*
+    /// added to the active summary (or global if no summary is active)
+    /// - This is not meant to be used for loop variables.
+    /// Use `mark_loop_variable` for that.
+    ///
+    /// # Arguments
+    /// - `term`: The term to mark the range of.
+    /// - `lower`: The lower bound of the range.
+    /// - `upper`: The upper bound of the range.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidTerm` if the term does not exist in the context.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::WrongType` if the two literals are not the same variant.
+    ErrorCode Context::mark_range(FfiTerm term, Literal lower, Literal upper) {
+        return abc_mark_range(*this, term, lower, upper);
+    }
+
+    /// Mark the return type for the active summary.
+    ///
+    /// It is not necessary to call this method for functions that do not return
+    /// a value.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::InvalidSummary` if there is no active summary
+    /// - `ErrorCode::DuplicateType` if the return type has already been marked for the summary
+    ErrorCode Context::mark_return_type(FfiAbcType ty) {
+        return abc_mark_return_type(*this, ty);
+    }
+
+    FfiTerm Context::get_empty_term() {
+        return abc_get_empty_term();
     }
 }

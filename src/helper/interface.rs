@@ -56,6 +56,25 @@ pub enum ConstraintError {
     ConstraintLimitExceeded,
     #[error("Maximum summary count exceeded")]
     SummaryLimitExceeded,
+    #[error("No summary with that id exists.")]
+    InvalidSummary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(C)]
+pub struct SummaryId(pub(crate) usize);
+
+impl std::ops::Deref for SummaryId {
+    type Target = usize;
+    fn deref(&self) -> &usize {
+        &self.0
+    }
+}
+
+impl From<usize> for SummaryId {
+    fn from(id: usize) -> Self {
+        SummaryId(id)
+    }
 }
 
 #[allow(clippy::missing_errors_doc)]
@@ -96,7 +115,7 @@ where
     /// # Errors
     /// The implementation should return an error if the function called does not reside in the arena.
     fn make_call(
-        &mut self, func: &Self::Handle<Summary>, args: Vec<Term>, into: Option<&Term>,
+        &mut self, func: SummaryId, args: Vec<Term>, into: Option<&Term>,
     ) -> Result<Term, Self::E>;
 
     /// Add a new constraint to the constraint system. Any active predicates are applied to the constraint to "filter" the domain of its expression.
@@ -194,11 +213,11 @@ where
     /// Returns an error if there is already an active summary.
     fn begin_summary(&mut self, name: String, nargs: u8) -> Result<(), Self::E>;
 
-    /// Ends the current summary, returning a handle that references it.
+    /// Ends the current summary, returning an identifer that can be used to reference it.
     ///
     /// # Errors
     /// Returns an error if there is no active summary.
-    fn end_summary(&mut self) -> Result<(u32, Self::Handle<Summary>), Self::E>;
+    fn end_summary(&mut self) -> Result<SummaryId, Self::E>;
 
     /// Marks a return statement
     ///
@@ -445,13 +464,36 @@ pub struct ConstraintHelper {
 // which is not actually needed.
 
 impl ConstraintHelper {
+    /// Convert the solution to a vector containing the (id, result) pairs.
+    pub fn solution_to_true_false(
+        solution: &FastHashMap<u32, Vec<IntervalKind>>,
+    ) -> Vec<(u32, bool)> {
+        solution
+            .iter()
+            .map(|(k, v)| {
+                let mut result = BoolInterval::empty();
+                for kind in v {
+                    if let Some(b) = kind.as_bool() {
+                        if b.contains(BoolInterval::False) {
+                            return (*k, false);
+                        }
+                    } else {
+                        return (*k, false);
+                    }
+                }
+
+                return (*k, true);
+            })
+            .collect()
+    }
+
     /// Solve the constraints for the function at the given index.
     ///
     /// # Errors
     /// If any part of the constraint system is not well formed, then this will return an error.
     /// If the provided index does not exist, this will also return an error.
     pub fn solve(
-        &self, idx: u32,
+        &self, idx: SummaryId,
     ) -> Result<
         FastHashMap<u32, Vec<IntervalKind>>,
         crate::solvers::interval::translator::SolverError,
@@ -778,13 +820,16 @@ impl ConstraintInterface for ConstraintHelper {
     /// the arguments substituted with `args`, and the return value substituted with `into`.
     /// If `into` is `None`, then a new term is created for the return value (for proper ssa handling)
     fn make_call(
-        &mut self, func: &Self::Handle<Summary>, args: Vec<Term>, into: Option<&Term>,
+        &mut self, func: SummaryId, args: Vec<Term>, into: Option<&Term>,
     ) -> Result<Term, Self::E> {
+        let Some(func) = self.module.summaries.get(func.0).cloned() else {
+            return Err(ConstraintError::InvalidSummary);
+        };
         // We have to add the constraints from the summary.
         // For now, we don't do this, but we will have to on the desugaring pass.
         // First, we add assumptions that all arguments equal their call.
         if args.len() != func.args.len() {
-            return Err(ConstraintError::SummaryError);
+            return Err(ConstraintError::InvalidArguments);
         }
 
         // We replace the arguments in the constraints...
@@ -1275,9 +1320,9 @@ impl ConstraintInterface for ConstraintHelper {
     /// End a summary block.
     ///
     /// This returns a tuple of an identifier that can be used to refer to the summary, as well as a handle to the summary itself.
-    fn end_summary(&mut self) -> Result<(u32, Self::Handle<Summary>), ConstraintError> {
+    fn end_summary(&mut self) -> Result<SummaryId, ConstraintError> {
         #[allow(clippy::cast_possible_truncation)] // summaries can't exceed u32 max.
-        let id = self.module.summaries.len() as u32;
+        let id = SummaryId(self.module.summaries.len());
         let summary = self
             .active_summary
             .take()
@@ -1295,7 +1340,7 @@ impl ConstraintInterface for ConstraintHelper {
 
         let summary = Handle::new(summary);
         self.module.summaries.push(summary.clone());
-        Ok((id, summary))
+        Ok(id)
     }
 }
 
@@ -1356,7 +1401,7 @@ pub(crate) mod test {
             .add_assumption(&arg, AssumptionOp::Assign, &Term::new_literal(4u32))
             .unwrap();
 
-        let (pos, old_method) = constraint_helper.end_summary().unwrap();
+        let summary_id = constraint_helper.end_summary().unwrap();
 
         // Now, begin a new summary.
         constraint_helper
@@ -1371,9 +1416,7 @@ pub(crate) mod test {
 
         let args = vec![my_x.clone()];
         // Now, push a call.
-        constraint_helper
-            .make_call(&old_method, args, None)
-            .unwrap();
+        constraint_helper.make_call(summary_id, args, None).unwrap();
 
         let expected_assumption = constraint_helper
             .build_assumption(&my_x, AssumptionOp::Assign, &Term::new_literal(4u32))

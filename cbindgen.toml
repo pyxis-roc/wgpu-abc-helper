@@ -21,7 +21,7 @@ usize_is_size_t = true
 # FfiTerm and FfiAbcType should be renamed to Term and AbcType, as they are just FFI interfaces to these types.
 rename = { "FfiStr" = "const char*", "CString" = "const char*"}
 # renaming_overrides_prefixing = true
-exclude = ["WrappedInterval", "Predicate", "AbcScalar"]
+exclude = ["WrappedInterval", "Predicate"]
 
 [parse.expand]
 crates = ["abc-helper"]
@@ -101,9 +101,30 @@ public:
   MaybeTerm new_mat4x2(FfiTerm row_0, FfiTerm row_1, FfiTerm row_2, FfiTerm row_3, FfiAbcType ty);
   MaybeTerm new_mat4x3(FfiTerm row_0, FfiTerm row_1, FfiTerm row_2, FfiTerm row_3, FfiAbcType ty);
   MaybeTerm new_mat4x4(FfiTerm row_0, FfiTerm row_1, FfiTerm row_2, FfiTerm row_3, FfiAbcType ty);
-  MaybeAbcType new_Scalar_type(uint8_t width, AbcScalar::Tag tag);
+  MaybeAbcType new_Scalar_type(AbcScalar scalar);
   MaybeAbcType new_Struct_type(const char* *fields, const FfiAbcType *types, size_t num_fields);
   MaybeAbcType new_SizedArray_type(FfiAbcType ty, uint32_t size);
   MaybeAbcType new_DynamicArray_type(FfiAbcType ty);
   char *term_to_cstr(FfiTerm term);
+  MaybeSolution solve_constraints(FfiSummary summary);
+  ErrorCode serialize_constraints(const char* path);
+  ErrorCode mark_loop_variable(FfiTerm var, FfiTerm init, FfiTerm update_rhs, BinaryOp update_op);
+  MaybeTerm new_call(FfiSummary summary, const FfiTerm *args, uint32_t num_args, FfiTerm return_dest);
+  ErrorCode begin_loop(FfiTerm condition);
+  ErrorCode end_loop();
+  ErrorCode add_assumption(FfiTerm lhs, AssumptionOp op, FfiTerm rhs);
+  ErrorCode add_constraint(FfiTerm lhs, ConstraintOp op, FfiTerm rhs, uint32_t id);
+  ErrorCode begin_summary(const char* name, uint8_t num_args);
+  MaybeSummary end_summary();
+  MaybeTerm add_argument(const char* name, FfiAbcType ty);
+  ErrorCode mark_break();
+  ErrorCode mark_continue();
+  ErrorCode mark_type(FfiTerm term, FfiAbcType ty);
+  ErrorCode begin_predicate_block(FfiTerm predicate);
+  ErrorCode end_predicate_block();
+  ErrorCode mark_return_type(FfiAbcType ty);
+  ErrorCode mark_return(FfiTerm retval);
+  ErrorCode mark_array_length(FfiTerm array, uint8_t dim, uint32_t size);
+  ErrorCode mark_range(FfiTerm term, Literal lower, Literal upper);
+  FfiTerm get_empty_term();
 """

@@ -30,7 +30,7 @@ use ops::{Intersect, IntersectAssign, IntervalMax, IntervalMin, Union};
 
 pub use translator::SolverError;
 
-use crate::{macros::cbindgen_annotate, FastHashSet};
+use crate::FastHashSet;
 
 /// A supertrait allowing the type to be used as an element of `Interval`
 pub trait IntervalBoundary:

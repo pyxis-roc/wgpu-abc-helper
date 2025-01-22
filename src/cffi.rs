@@ -10,13 +10,17 @@ use super::{AbcType, CmpOp, Term};
 use ffi_support::FfiStr;
 use lazy_static::lazy_static;
 use std::ffi::{c_char, CString};
+use std::num::NonZeroUsize;
 use std::sync::RwLock;
 
 #[allow(unused_imports)]
 use crate::cbindgen_annotate;
-use crate::{AbcScalar, Literal, StructField};
+use crate::{
+    AbcScalar, AssumptionOp, BinaryOp, ConstraintHelper, ConstraintInterface, ConstraintOp,
+    Literal, StructField, SummaryId, Var,
+};
 
-/*************************
+/* ***********************
  *   Macro Definitions   *
  ************************/
 
@@ -54,6 +58,15 @@ macro_rules! get_context_mut {
         };
         let Some(Some($result_var)) = $container_var.get_mut($context_obj.id) else {
             return ErrorCode::InvalidContext;
+        };
+    };
+
+    (@maybe_summary, $context_obj:expr, $container_var:ident, $result_var:ident $(,)?) => {
+        let Ok(mut $container_var) = FfiContexts.write() else {
+            return MaybeSummary::Error(ErrorCode::PoisonedLock);
+        };
+        let Some(Some($result_var)) = $container_var.get_mut($context_obj.id) else {
+            return MaybeSummary::Error(ErrorCode::InvalidContext);
         };
     };
 
@@ -112,7 +125,7 @@ pub enum ErrorCode {
     NullPointer = 7,
 
     /// Indicates a passed pointer was not properly aligned.
-    Alignmenterror = 8,
+    AlignmentError = 8,
 
     /// Indicates a forbidden zero value passed as an arugment.
     ForbiddenZero = 9,
@@ -125,6 +138,100 @@ pub enum ErrorCode {
 
     /// Indicates that the context does not exist in the global context map.
     InvalidContext = 12,
+
+    /// Indicates that a file error occurred.
+    FileError = 13,
+
+    /// An error occured during serialization
+    SerializationError = 14,
+
+    /// An error indicating the operation is not supported for the method.
+    UnsupportedOperation = 15,
+
+    /// Indicates that the predicate stack is empty
+    PredicateStackEmpty = 16,
+
+    /// Indicates that there is no active summary when one is required.
+    NotInSummary = 17,
+
+    /// Indicates an attempt to declare the type of the same term multiple times.
+    DuplicateType = 18,
+
+    /// Indicates that the requested operation is not implemented
+    NotImplemented = 19,
+
+    /// Indicates an attempt to use a `break` or `continue` outside of a loop context.
+    NotInLoopContext = 20,
+
+    /// Indicates that the maximum loop depth has been exceeded.
+    MaxLoopDepthExceeded = 21,
+
+    //// Indicates that the empty term was used in a disallowed context.
+    EmptyTerm = 22,
+
+    /// Indicates that the arguments to a method call were incorrect.
+    InvalidArguments = 23,
+
+    /// Indicates an attempt to assign the return value of a function that does not return a value.
+    NoReturnValue = 24,
+
+    /// Indicates that the loop condition is not supported.
+    UnsupportedLoopCondition = 25,
+
+    /// Indicates the type is not supported for the requested operation.
+    UnsupportedType = 26,
+
+    /// Indicates that an additional assumption on the same boundary of a term was attempted.
+    DuplicateAssumption = 27,
+
+    /// Indicates an error that went wrong during the solving process.
+    SolverError = 28,
+
+    /// Indicates the number of constraints exceeded the maximum allowed.
+    ConstraintLimitExceeded = 29,
+
+    /// Indicates the number of summaries exceeded the maximum allowed.
+    SummaryLimitExceeded = 30,
+}
+
+impl From<crate::ConstraintError> for ErrorCode {
+    fn from(e: crate::ConstraintError) -> Self {
+        use crate::ConstraintError as E;
+        match e {
+            E::UnsupportedLoopOperation => ErrorCode::UnsupportedOperation,
+            E::PredicateStackEmpty => ErrorCode::PredicateStackEmpty,
+            E::SummaryError => ErrorCode::InvalidSummary,
+            E::DuplicateType => ErrorCode::DuplicateType,
+            E::NotImplemented(..) => ErrorCode::NotImplemented,
+            E::NotInLoopContext => ErrorCode::NotInLoopContext,
+            E::MaxLoopDepthExceeded => ErrorCode::MaxLoopDepthExceeded,
+            E::EmptyTerm => ErrorCode::EmptyTerm,
+            E::InvalidArguments => ErrorCode::InvalidArguments,
+            E::NoReturnValue => ErrorCode::NoReturnValue,
+            E::UnsupportedLoopCondition(_) => ErrorCode::UnsupportedLoopCondition,
+            E::UnsupportedType(_) => ErrorCode::UnsupportedType,
+            E::DuplicateAssumption => ErrorCode::DuplicateAssumption,
+            E::SolverError(_) => ErrorCode::SolverError,
+            E::ConstraintLimitExceeded => ErrorCode::ConstraintLimitExceeded,
+            E::SummaryLimitExceeded => ErrorCode::SummaryLimitExceeded,
+            E::InvalidSummary => ErrorCode::InvalidSummary,
+        }
+    }
+}
+
+impl From<Result<(), crate::ConstraintError>> for ErrorCode {
+    fn from(r: Result<(), crate::ConstraintError>) -> Self {
+        match r {
+            Ok(_) => ErrorCode::Success,
+            Err(e) => e.into(),
+        }
+    }
+}
+
+impl From<Result<(), ErrorCode>> for ErrorCode {
+    fn from(r: Result<(), ErrorCode>) -> Self {
+        r.err().unwrap_or(ErrorCode::Success)
+    }
 }
 
 /// Represents a possible term, or an error code.
@@ -202,9 +309,20 @@ pub struct FfiSummary {
 }
 }
 
+/// Represents a possible summary, or an error code.
+#[repr(C)]
 pub enum MaybeSummary {
     Error(ErrorCode),
     Success(FfiSummary),
+}
+
+impl From<Result<FfiSummary, ErrorCode>> for MaybeSummary {
+    fn from(r: Result<FfiSummary, ErrorCode>) -> Self {
+        match r {
+            Ok(t) => MaybeSummary::Success(t),
+            Err(e) => MaybeSummary::Error(e),
+        }
+    }
 }
 
 cbindgen_annotate! { "cbindgen:derive-eq"
@@ -218,6 +336,21 @@ cbindgen_annotate! { "cbindgen:derive-eq"
 pub struct Context {
     pub(crate) id: usize,
 }}
+
+/// Get the `empty` term.
+///
+/// The empty term is used to represent the absence of a term.
+/// It is used in several methods that require a term to indicate that the term is unimportant.
+///
+/// For example, it must be passed when invoking a method that does not return a value.
+///
+/// Attempting to delete the empty term will do nothing, but will not result in an error.
+/// That is, the empty term is *always* valid, in any context.
+#[unsafe(no_mangle)]
+pub extern "C" fn abc_get_empty_term() -> FfiTerm {
+    FfiTerm { id: 0 }
+}
+
 /// Implements the methods for Context which exist in the FFI api.
 impl Context {
     #[unsafe(no_mangle)]
@@ -233,12 +366,13 @@ impl Context {
 
         let new = Context { id };
         contexts.push(Some(ContextInner {
-            terms: Vec::new(),
+            terms: vec![Some(Term::Empty)],
             types: Vec::new(),
             summaries: Vec::new(),
             reusable_term_ids: Vec::new(),
             reusable_type_ids: Vec::new(),
             reusable_summary_ids: Vec::new(),
+            constraint_helper: crate::helper::ConstraintHelper::default(),
         }));
         MaybeContext::Success(new)
     }
@@ -279,6 +413,9 @@ impl Context {
     /// `ErrorCode::InvalidContext` if the provided context does not exist in the global context map.
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_free_term(self, term: FfiTerm) -> ErrorCode {
+        if term.id == 0 {
+            return ErrorCode::Success;
+        }
         get_context_mut!(@plain, self, contexts, context);
         context.free_term_impl(term)
     }
@@ -340,10 +477,11 @@ impl Context {
 struct ContextInner {
     terms: Vec<Option<Term>>,
     types: Vec<Option<super::Handle<AbcType>>>,
-    summaries: Vec<Option<super::Handle<super::Summary>>>,
-    reusable_term_ids: Vec<usize>,
+    summaries: Vec<Option<SummaryId>>,
+    reusable_term_ids: Vec<NonZeroUsize>,
     reusable_type_ids: Vec<usize>,
     reusable_summary_ids: Vec<usize>,
+    constraint_helper: crate::helper::ConstraintHelper,
 }
 
 impl super::CmpOp {
@@ -383,15 +521,13 @@ pub struct FfiTerm {
 
 impl ContextInner {
     /// Implementation of `new_summary` for the `ContextInner` struct.
-    fn new_summary_impl<T: Into<super::Handle<super::Summary>>>(
-        &mut self, s: T,
-    ) -> Result<FfiSummary, ErrorCode> {
+    fn new_summary_impl(&mut self, s: SummaryId) -> Result<FfiSummary, ErrorCode> {
         if let Some(id) = self.reusable_summary_ids.pop() {
-            self.summaries[id] = Some(s.into());
+            self.summaries[id] = Some(s);
             Ok(FfiSummary { id })
         } else {
             let id = self.summaries.len();
-            self.summaries.push(Some(s.into()));
+            self.summaries.push(Some(s));
             Ok(FfiSummary { id })
         }
     }
@@ -411,6 +547,7 @@ impl ContextInner {
 
     fn new_term(&mut self, t: Term) -> FfiTerm {
         if let Some(id) = self.reusable_term_ids.pop() {
+            let id = id.get();
             self.terms[id] = Some(t.into());
             FfiTerm { id }
         } else {
@@ -423,12 +560,17 @@ impl ContextInner {
     /// Implementation of the `free_term` method for the `ContextInner` struct.
     fn free_term_impl(&mut self, term: FfiTerm) -> ErrorCode {
         let id = term.id;
+        if id == 0 {
+            return ErrorCode::Success;
+        }
         if id >= self.terms.len() {
             return ErrorCode::InvalidTerm;
         }
         match self.terms[id].take() {
             Some(_) => {
-                self.reusable_term_ids.push(id);
+                // Safety: We checked against id being 0 above.
+                self.reusable_term_ids
+                    .push(unsafe { NonZeroUsize::new_unchecked(id) });
                 ErrorCode::Success
             }
             None => ErrorCode::InvalidTerm,
@@ -452,14 +594,18 @@ impl ContextInner {
     }
 
     /// Add the provided type to this context and return its handle.
-    fn new_type(&mut self, ty: AbcType) -> FfiAbcType {
+    fn new_type(&mut self, ty: AbcType) -> Result<FfiAbcType, ErrorCode> {
+        let ty = self
+            .constraint_helper
+            .declare_type(ty)
+            .map_err(|_| ErrorCode::WrongType)?;
         if let Some(id) = self.reusable_type_ids.pop() {
-            self.types[id] = Some(ty.into());
-            FfiAbcType { id }
+            self.types[id] = Some(ty);
+            Ok(FfiAbcType { id })
         } else {
             let id = self.types.len();
-            self.types.push(Some(ty.into()));
-            FfiAbcType { id }
+            self.types.push(Some(ty));
+            Ok(FfiAbcType { id })
         }
     }
 
@@ -494,12 +640,10 @@ impl ContextInner {
     /// # Errors
     /// - [`ErrorCode::InvalidTerm`] is returned if the summary does not exist in the library's collection.
     #[allow(dead_code)]
-    fn get_summary(
-        &self, summary: FfiSummary,
-    ) -> Result<&super::Handle<super::Summary>, ErrorCode> {
+    fn get_summary(&self, summary: FfiSummary) -> Result<SummaryId, ErrorCode> {
         match self.summaries.get(summary.id) {
-            Some(Some(s)) => Ok(s),
-            _ => Err(ErrorCode::InvalidTerm),
+            Some(Some(s)) => Ok(*s),
+            _ => Err(ErrorCode::InvalidSummary),
         }
     }
 
@@ -554,7 +698,7 @@ impl Context {
     /// - A `cast` to a boolean type.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// - [`ErrorCode::PoisonedLock`] if the lock on the global context is poisoned.
@@ -650,7 +794,7 @@ impl Context {
     /// - `rhs`: The right-hand side of the comparison.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// - [`ErrorCode::InvalidTerm`] is returned if either `lhs` or `rhs` do not exist in the library's collection.
@@ -717,8 +861,15 @@ impl Context {
     pub extern "C" fn abc_new_var(self, s: FfiStr) -> MaybeTerm {
         get_context_mut!(@maybe_term, self, contexts, context);
 
-        match s.as_opt_str() {
-            Some(s) => MaybeTerm::Success(context.new_term(Term::new_var(s))),
+        match s.into_opt_string() {
+            Some(s) => {
+                let var = Var { name: s };
+                let term = match context.constraint_helper.declare_var(var) {
+                    Ok(t) => t,
+                    Err(e) => return MaybeTerm::Error(e.into()),
+                };
+                MaybeTerm::Success(context.new_term(term))
+            }
             None => MaybeTerm::Error(ErrorCode::NullPointer),
         }
     }
@@ -728,7 +879,7 @@ impl Context {
     /// `source_term` is the term to cast, and `ty` is the type to cast it to.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if the term was not valid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if the term was not valid.
     ///
     /// # Errors
     /// - [`ErrorCode::PoisonedLock`] is returned if the lock on the global Terms or Types is poisoned.
@@ -761,7 +912,7 @@ impl Context {
     /// Create a new comparison term, e.g. `x > y`.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid
     ///
     /// # Errors
     /// - [`ErrorCode::InvalidTerm`] is returned if either `lhs` or `rhs` do not exist in the library's collection.
@@ -781,7 +932,7 @@ impl Context {
     /// Create a new index access term, e.g. `x[y]`.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if either `base` or `index` do not exist in the context.
@@ -807,7 +958,7 @@ impl Context {
     /// - `field_idx`: The index of the field in the structure being accessed.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term or type could not be found.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term or type could not be found.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if `base` does not exist in the context.
@@ -847,7 +998,7 @@ impl Context {
     /// - `size`: The number of elements in the vector. Must be between 2 and 4  (inclusive).
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if `term` does not exist in the library's collection.
@@ -883,7 +1034,7 @@ impl Context {
     /// Create a binary operation term, e.g. `x + y`.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if either `lhs` or `rhs` do not exist in the library's collection.
@@ -910,7 +1061,7 @@ impl Context {
     /// Create a new unary operation term, e.g. `-x`.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if either `lhs` or `rhs` do not exist in the context.
@@ -930,7 +1081,7 @@ impl Context {
     /// Create a new term corresponding to wgsl's [`max`](https://www.w3.org/TR/WGSL/#max-float-builtin) bulitin.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if either `lhs` or `rhs` do not exist in the context.
@@ -955,7 +1106,7 @@ impl Context {
     /// Create a new term corresponding to wgsl's [`min`](https://www.w3.org/TR/WGSL/#min-float-builtin) builtin.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if either `lhs` or `rhs` do not exist in the context.
@@ -988,7 +1139,7 @@ impl Context {
     /// - `Predicate`: The term that determines the resolution of `iftrue` or `iffalse`.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if either `lhs`, `m`, or `rhs` do not exist in the context.
@@ -1046,7 +1197,7 @@ impl Context {
     /// - `ty`: The type of the terms in the vector
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if any of the terms do not exist in the context.
@@ -1067,7 +1218,7 @@ impl Context {
     /// - `ty`: The type of the terms in the vector
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if any of the terms do not exist in the context.
@@ -1091,7 +1242,7 @@ impl Context {
     /// - `ty`: The type of the terms in the vector
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if any of the terms do not exist in the context.
@@ -1117,7 +1268,7 @@ impl Context {
     /// - `term`: The array term that this expression is being applied to.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if `term` does not exist in the context.
@@ -1146,7 +1297,7 @@ impl Context {
     /// - `value`: The value that is being written to the array.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if `term` does not exist in the context.
@@ -1191,7 +1342,7 @@ impl Context {
     /// - `value`: The value that is being written to the struct.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if `term` does not exist in the context.
@@ -1225,7 +1376,7 @@ impl Context {
     /// - `term`: The term that is being passed to the `abs` operator.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if `term` does not exist in the context.
@@ -1249,7 +1400,7 @@ impl Context {
     /// - `exponent`: The exponent of the power operation.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if either `base` or `exponent` do not exist in the context.
@@ -1278,7 +1429,7 @@ impl Context {
     /// - `rhs`: The right-hand side of the dot product.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if either `lhs` or `rhs` do not exist in the context.
@@ -1311,7 +1462,7 @@ impl Context {
     /// - `ty`: The type of the terms in the matrix. This must be a scalar.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if any of the rows do not exist in the context.
@@ -1336,7 +1487,7 @@ impl Context {
     /// - `ty`: The type of the terms in the matrix. This must be a scalar.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if any of the rows do not exist in the context.
@@ -1361,7 +1512,7 @@ impl Context {
     /// - `ty`: The type of the terms in the matrix. This must be a scalar.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if any of the rows do not exist in the context.
@@ -1387,7 +1538,7 @@ impl Context {
     /// - `ty`: The type of the terms in the matrix. This must be a scalar.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if any of the rows do not exist in the context.
@@ -1413,7 +1564,7 @@ impl Context {
     /// - `ty`: The type of the terms in the matrix. This must be a scalar.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if any of the rows do not exist in the context.
@@ -1439,7 +1590,7 @@ impl Context {
     /// - `ty`: The type of the terms in the matrix. This must be a scalar.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if any of the rows do not exist in the context.
@@ -1466,7 +1617,7 @@ impl Context {
     /// - `ty`: The type of the terms in the matrix. This must be a scalar.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if any of the rows do not exist in the context.
@@ -1494,7 +1645,7 @@ impl Context {
     /// - `ty`: The type of the terms in the matrix. This must be a scalar.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if any of the rows do not exist in the context.
@@ -1522,7 +1673,7 @@ impl Context {
     /// - `ty`: The type of the terms in the matrix. This must be a scalar.
     ///
     /// # Returns
-    /// A `MaybeTerm` which is either a `Term` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
+    /// A `MaybeTerm` which is either an `FfiTerm` if the term was successfully created, or an `ErrorCode` if a provided term was invalid.
     ///
     /// # Errors
     /// `ErrorCode::InvalidTerm` if any of the rows do not exist in the context.
@@ -1607,7 +1758,10 @@ impl Context {
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_new_Scalar_type(self, scalar: AbcScalar) -> MaybeAbcType {
         get_context_mut!(@maybe_type, self, contexts, context);
-        MaybeAbcType::Success(context.new_type(AbcType::Scalar(scalar)))
+        let Ok(ty) = context.new_type(AbcType::Scalar(scalar)) else {
+            return MaybeAbcType::Error(ErrorCode::WrongType);
+        };
+        MaybeAbcType::Success(ty)
     }
 
     /// Create a new struct type. Takes a list of fields, each of which is a tuple of a string and an `AbcType`.
@@ -1625,7 +1779,7 @@ impl Context {
     ///
     /// # Errors
     /// - `ErrorCode::NullPointer` if either `fields` or `types` is null.
-    /// - `ErrorCode::Alignmenterror` if the pointers are not properly aligned.
+    /// - `ErrorCode::AlignmentError` if the pointers are not properly aligned.
     /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
     /// - `ErrorCode::InvalidType` if any of the types passed do not exist the context.
     #[unsafe(no_mangle)]
@@ -1635,9 +1789,12 @@ impl Context {
         // If len is 0, then we don't even have to check against null pointers. Just return an empty struct.
         if num_fields == 0 {
             get_context_mut!(@maybe_type, self, contexts, context);
-            return MaybeAbcType::Success(context.new_type(AbcType::Struct {
+            let Ok(ty) = context.new_type(AbcType::Struct {
                 members: Vec::new(),
-            }));
+            }) else {
+                return MaybeAbcType::Error(ErrorCode::WrongType);
+            };
+            return MaybeAbcType::Success(ty);
         }
         // Otherwise, we need to do the safety checks.
         if fields.is_null() || types.is_null() {
@@ -1646,7 +1803,7 @@ impl Context {
 
         // Check for proper alignment to avoid unsafety.
         if !(fields.is_aligned() && types.is_aligned()) {
-            return MaybeAbcType::Error(ErrorCode::Alignmenterror);
+            return MaybeAbcType::Error(ErrorCode::AlignmentError);
         }
 
         get_context_mut!(@maybe_type, self, contexts, context);
@@ -1656,7 +1813,7 @@ impl Context {
         let types_slice = std::slice::from_raw_parts(types, num_fields);
 
         // Make the new fields hashmap.
-        let mut new_fields = Vec::with_capacity(num_fields);
+        let mut members = Vec::with_capacity(num_fields);
 
         // Iterate over the fields
         for (pos, ty) in types_slice.iter().enumerate() {
@@ -1667,16 +1824,17 @@ impl Context {
                 Some(s) => s,
                 None => return MaybeAbcType::Error(ErrorCode::NullPointer),
             });
-            new_fields.push(StructField {
+            members.push(StructField {
                 name: field_name,
                 ty: matched_ty.clone(),
             });
         }
 
         // Create the struct type.
-        MaybeAbcType::Success(context.new_type(AbcType::Struct {
-            members: new_fields,
-        }))
+        let Ok(ty) = context.new_type(AbcType::Struct { members }) else {
+            return MaybeAbcType::Error(ErrorCode::WrongType);
+        };
+        MaybeAbcType::Success(ty)
     }
 
     /// Declare a new `SizedArray` type. `size` is the number of elements in the array. This cannot be 0.
@@ -1695,11 +1853,16 @@ impl Context {
         get_context_mut!(@maybe_type, self, contexts, context);
 
         match context.get_type(ty) {
-            Ok(ty) => MaybeAbcType::Success(context.new_type(AbcType::SizedArray {
-                ty: ty.clone(),
-                // Safety: We checked against 0 above.
-                size: unsafe { std::num::NonZeroU32::try_from(size).unwrap_unchecked() },
-            })),
+            Ok(ty) => {
+                let Ok(ty) = context.new_type(AbcType::SizedArray {
+                    ty: ty.clone(),
+                    // Safety: We checked against 0 above.
+                    size: unsafe { std::num::NonZeroU32::try_from(size).unwrap_unchecked() },
+                }) else {
+                    return MaybeAbcType::Error(ErrorCode::WrongType);
+                };
+                MaybeAbcType::Success(ty)
+            }
             _ => MaybeAbcType::Error(ErrorCode::InvalidType),
         }
     }
@@ -1716,7 +1879,10 @@ impl Context {
 
         match context.get_type(ty) {
             Ok(ty) => {
-                MaybeAbcType::Success(context.new_type(AbcType::DynamicArray { ty: ty.clone() }))
+                let Ok(ty) = context.new_type(AbcType::DynamicArray { ty: ty.clone() }) else {
+                    return MaybeAbcType::Error(ErrorCode::WrongType);
+                };
+                MaybeAbcType::Success(ty)
             }
             _ => MaybeAbcType::Error(ErrorCode::InvalidType),
         }
@@ -1749,6 +1915,794 @@ impl Context {
             ValidityKind::Contained
         } else {
             ValidityKind::NotContained
+        }
+    }
+}
+
+/* Solver */
+// Section of methods to allow for cffi to interface with the solver.
+// They belong to the context.
+
+/// The error codes that can be returned by `abc_solve_constraints` method.
+#[repr(C)]
+pub enum SolverErrorCode {
+    /// Summary is invalid.
+    InvalidSummary = 1,
+    /// Unsupported type for an operation
+    UnsupportedType = 2,
+    /// Multiple assumptions for the same term.
+    DuplicateAssignmentError = 3,
+
+    InvalidOp = 4,
+
+    /// Multiple assignments to the same term.
+    /// The only term that this can occur for is `ret`.
+    ///
+    /// `Ret` is special, it is the only term that may be assigned to more than once.
+    SsaViolation = 5,
+
+    TypeMismatch = 6,
+
+    Unexpected = 7,
+
+    Unsupported = 8,
+
+    /// Top level constraints can not be satisfied.
+    DeadCode = 9,
+
+    /// The lock on the global contexts is poisoned.
+    PoisonedLock = 10,
+
+    /// The context does not exist.
+    InvalidContext = 11,
+}
+
+use crate::solvers::interval::{IntervalError, SolverError};
+
+impl From<SolverError> for SolverErrorCode {
+    fn from(e: SolverError) -> Self {
+        use IntervalError as IE;
+        use SolverError as SE;
+        match e {
+            SE::InvalidSummary => SolverErrorCode::InvalidSummary,
+            SE::UnsupportedType => SolverErrorCode::UnsupportedType,
+            SE::DuplicateAssignmentError(_) => SolverErrorCode::DuplicateAssignmentError,
+            SE::IntervalError(IE::InvalidBinOp(_, _, _) | IE::InvalidOp(_, _)) => {
+                SolverErrorCode::InvalidOp
+            }
+            SE::SsaViolation(_) => SolverErrorCode::SsaViolation,
+            SE::IntervalError(IE::IncompatibleTypes) | SE::TypeMismatch { .. } => {
+                SolverErrorCode::TypeMismatch
+            }
+            SE::Unexpected(_) => SolverErrorCode::Unexpected,
+            SE::Unsupported(_) => SolverErrorCode::Unsupported,
+            SE::DeadCode => SolverErrorCode::DeadCode,
+        }
+    }
+}
+
+/// The solution to the constraints.
+#[repr(C)]
+pub enum MaybeSolution {
+    Success(ConstraintSolution),
+    Error(SolverErrorCode),
+}
+
+/// The result of a constraint.
+#[repr(C)]
+pub struct ConstraintResult(u32, bool);
+
+#[repr(C)]
+pub struct ConstraintSolution {
+    /// The size of the results array.
+    len: usize,
+    results: *const ConstraintResult,
+}
+
+impl From<(u32, bool)> for ConstraintResult {
+    fn from((id, result): (u32, bool)) -> Self {
+        Self(id, result)
+    }
+}
+impl From<&(u32, bool)> for ConstraintResult {
+    fn from((id, result): &(u32, bool)) -> Self {
+        Self(*id, *result)
+    }
+}
+impl From<ConstraintResult> for (u32, bool) {
+    fn from(result: ConstraintResult) -> Self {
+        (result.0, result.1)
+    }
+}
+impl ConstraintSolution {
+    /// Free the solution vector. After calling this method, the solution is no longer valid
+    /// This must be called to avoid a memory leak.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_free_solution(solution: Self) {
+        drop(solution)
+    }
+}
+
+impl Context {
+    /// Solve the constraints for the provided summary.
+    ///
+    /// Note that the returned solution *must be freed* by calling `abc_free_solution` otherwise
+    /// a memory leak will occur.
+    ///
+    /// This will return an `FfiSolution` which contains the results.
+    /// The results are in the form (id, bool). `id` corresponds to the
+    /// id of the constraint that was provided when the constraint was added.
+    /// the `bool` corresponds to the result of the constraint. It is `true`
+    /// if the constraint is always satisfied. In this case, the bounds check
+    /// can be removed. `false` means that the constraint could not
+    /// be proven to always be satisfied. In this case, the bounds check
+    /// must be kept.
+    ///
+    /// In this current implementation, there is not a distinction
+    /// between checks that are always violated and checks that may be violated.
+    ///
+    ///
+    /// # Errors
+    /// - `SolverErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `SolverErrorCode::InvalidContext` if the context does not exist.
+    /// - `SolverErrorCode::InvalidSummary` if the summary does not exist in the context.
+    /// - Many other errors may be returned that occur during the solving process.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_solve_constraints(self, summary: FfiSummary) -> MaybeSolution {
+        let Ok(contexts) = FfiContexts.read() else {
+            return MaybeSolution::Error(SolverErrorCode::PoisonedLock);
+        };
+        let Some(Some(context)) = contexts.get(self.id) else {
+            return MaybeSolution::Error(SolverErrorCode::InvalidContext);
+        };
+
+        // Get the `id` from the summary.
+        let id = match context.get_summary(summary) {
+            Ok(s) => s,
+            Err(_) => return MaybeSolution::Error(SolverErrorCode::InvalidSummary),
+        };
+
+        let result = match context.constraint_helper.solve(id) {
+            Ok(r) => r,
+            Err(e) => return MaybeSolution::Error(e.into()),
+        };
+
+        let result: Vec<ConstraintResult> = ConstraintHelper::solution_to_true_false(&result)
+            .iter()
+            .map(Into::into)
+            .collect();
+
+        let ffi_vec = ConstraintSolution {
+            len: result.len(),
+            results: result.as_ptr(),
+        };
+
+        std::mem::forget(result);
+
+        MaybeSolution::Success(ffi_vec)
+    }
+
+    /// Serializes the constraint system to json.
+    /// The input should be a file path where the serialized json will be written.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_serialize_constraints(self, path: FfiStr) -> ErrorCode {
+        use serde::Serialize;
+
+        let Ok(contexts) = FfiContexts.read() else {
+            return ErrorCode::PoisonedLock;
+        };
+
+        let Some(Some(context)) = contexts.get(self.id) else {
+            return ErrorCode::InvalidContext;
+        };
+
+        let path = match path.as_opt_str() {
+            Some(p) => p,
+            None => return ErrorCode::NullPointer,
+        };
+
+        let f = match std::fs::File::create(path) {
+            Ok(f) => f,
+            Err(_) => return ErrorCode::FileError,
+        };
+
+        let mut serializer = serde_json::Serializer::new(f);
+
+        let Ok(()) = context
+            .constraint_helper
+            .get_module()
+            .serialize(&mut serializer)
+        else {
+            return ErrorCode::SerializationError;
+        };
+
+        ErrorCode::Success
+    }
+
+    /// Mark a variable as a loop variable.
+    ///
+    /// A loop variable is any variable that is updated within a loop. Supported operations
+    /// are limited to binary operations. For best results, the increment / decrement term must be
+    /// a constnat.
+    ///
+    /// # Arguments
+    /// - `var`: The induction variable.
+    /// - `init`: The expression the induction variable is initialized to.
+    /// - `update_rhs`: The expression that the term is incremented / decremented by
+    /// - `update_op`: The operation that is used to update the term.
+    ///
+    /// Note that `inc_term` and `inc_op` are parts of the expression with the induction term.
+    /// That is, only expressions of the form `a = a op b` are allowed, where `a` is the induction variable.
+    /// This method should come **before** the `begin_loop` call.
+    ///
+    /// # Errors
+    /// - `ErrorCode::InvalidTerm` if any of the terms passed are invalid.
+    /// - `ErrorCode::UnsupportedOperation` if the operation is not supported for loops.
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_mark_loop_variable(
+        self, var: FfiTerm, init: FfiTerm, update_rhs: FfiTerm, update_op: BinaryOp,
+    ) -> ErrorCode {
+        get_context_mut!(@plain, self, contexts, context);
+        match context.mark_loop_variable_impl(var, init, update_rhs, update_op) {
+            Ok(()) => ErrorCode::Success,
+            Err(e) => e,
+        }
+    }
+
+    /// Add the constraints of the summary by invoking the function call with the proper arguments.
+    ///
+    ///
+    /// # Arguments
+    /// - `summary`: The summary for the function being invoked
+    /// - `args`: An array containing the arguments that are passed to the function.
+    /// - `num_args`: The size of the `args` array.
+    /// - `return_dest`: A fresh variable term that will hold the return value. If the return value is not used,
+    /// then this must be the `Empty` term.
+    ///
+    /// This will add the constraints of the summary to the constraint system, with
+    /// the arguments substituted with `args`, and the return value substituted with `return_dest`.
+    ///
+    /// # Safety
+    /// The caller must ensure that `args` holds at least `num_args` elements.
+    ///
+    /// # Errors
+    /// - `ErrorCode::NullPointer` if `args` is null and `num_args` is not 0.
+    /// - `ErrorCode::AlignmentError` if `args` is not properly aligned.
+    /// - `ErrorCode::InvalidTerm` if any of the terms passed do not exist in the context.
+    /// - `ErrorCode::InvalidSummary` if the summary does not exist in the context.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn abc_new_call(
+        self, summary: FfiSummary, args: *const FfiTerm, num_args: u32, return_dest: FfiTerm,
+    ) -> MaybeTerm {
+        let resolved_args: &[FfiTerm];
+        if num_args != 0 {
+            if args.is_null() {
+                return MaybeTerm::Error(ErrorCode::NullPointer);
+            }
+            if !args.is_aligned() {
+                return MaybeTerm::Error(ErrorCode::AlignmentError);
+            }
+            // Safety: We have checked that the pointer is not null and is aligned.
+            // and it is the user's responsibility to ensure that `num_args` is at most the
+            // length of the array.
+            resolved_args = unsafe { std::slice::from_raw_parts(args, num_args as usize) };
+        } else {
+            resolved_args = &[];
+        }
+
+        get_context_mut!(@maybe_term, self, contexts, context);
+
+        let return_dest = if return_dest.id == 0 {
+            None
+        } else {
+            Some(return_dest)
+        };
+
+        context
+            .make_call_impl(summary, resolved_args, return_dest)
+            .into()
+    }
+
+    /// Begins a loop context.
+    ///
+    /// A loop context is akin to a predicate context. It allows for the convenience methods for `break` and `continue`
+    /// to be properly handled. Additionally, all updates to variables within are marked as range constraints.
+    ///
+    /// The `condition` should correspond to a boolean term where one of the operands has been marked as a loop variable.
+    ///
+    /// # Errors
+    /// - `ErrorCode::InvalidTerm` if the term does not exist in the context.
+    /// - `ErrorCode::UnsupportedLoopCondition` if the condition is not a `Predicate` or `Var` term.
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_begin_loop(self, condition: FfiTerm) -> ErrorCode {
+        get_context_mut!(@plain, self, contexts, context);
+        match context.begin_loop_impl(condition) {
+            Ok(()) => ErrorCode::Success,
+            Err(e) => e,
+        }
+    }
+
+    /// End a loop context.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::NotInLoopcontext` if there has been no matching call to `begin_loop`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_end_loop(self) -> ErrorCode {
+        get_context_mut!(@plain, self, contexts, context);
+        context.constraint_helper.end_loop().into()
+    }
+
+    /// Mark an assumption.
+    ///
+    /// Assumptions are invariants that must hold at all times.
+    /// At solving time, these differ from constraints in that they are not inverted
+    /// to test for satisfiability.
+    ///
+    /// # Arguments
+    /// - `lhs`: The left hand side of the assumption.
+    /// - `op`: The operation that is used to compare the terms.
+    /// - `rhs`: The right hand side of the assumption.
+    ///
+    /// There can only be one assumption per direction for each term. That is,
+    /// each term may *either* have one equality assumption (:=) *or* one
+    ///  inequality assumption per direction (one less / less equal, one
+    /// greater / greater equal). Violating this will result in a
+    /// `DuplicateAssumption` error.
+    ///
+    /// # Errors
+    /// - `ErrorCode::InvalidTerm` if any term does not exist in the context.
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::DuplicateAssumption` if `lhs` has already had an assumption on the specified boundary.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_add_assumption(
+        self, lhs: FfiTerm, op: AssumptionOp, rhs: FfiTerm,
+    ) -> ErrorCode {
+        get_context_mut!(@plain, self, contexts, context);
+        context.add_assumption_impl(lhs, rhs, op).into()
+    }
+
+    /// Begin a summary block.
+    ///
+    /// A summary block corresponds to a function definition. All constraints
+    /// that are added within the summary block are considered to be constraints
+    /// of the function.
+    ///
+    /// A summary block must be ended with a call to `end_summary`, which will
+    /// provide the `FfiSummary` that can be used to refer to it.
+    ///
+    /// # Arguments
+    /// - `name`: The name of the function.
+    /// - `num_args`: The number of arguments the function takes.
+    ///
+    /// # Errors
+    /// - `ErrorCode::NullPointer` if `name` is null.
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::SummaryLimitExceeded` if the number of summaries exceeds the limit.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_begin_summary(self, name: FfiStr, num_args: u8) -> ErrorCode {
+        get_context_mut!(@plain, self, contexts, context);
+        let name = match name.into_opt_string() {
+            Some(name) => name,
+            None => return ErrorCode::NullPointer,
+        };
+        context
+            .constraint_helper
+            .begin_summary(name, num_args)
+            .into()
+    }
+
+    /// End a summary block.
+    ///
+    /// This will return the `FfiSummary` that can be used to refer to the summary.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::NotInSummary` if there has been no matching call to `begin_summary`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_end_summary(self) -> MaybeSummary {
+        get_context_mut!(@maybe_summary, self, contexts, context);
+        context.end_summary_impl().into()
+    }
+
+    /// Add an argument to the active summary.
+    ///
+    /// The `begin_summary` method must be called before this method.
+    ///
+    /// # Arguments
+    /// - `name`: The name of the argument.
+    /// - `ty`: The type of the argument.
+    ///
+    /// # Returns
+    /// A `MaybeTerm` which is either an `FfiTerm` if the argument was successfully created, or an `ErrorCode` if a provided term was invalid.
+    ///
+    /// # Errors
+    /// - `ErrorCode::NullPointer` if `name` is null.
+    /// - `ErrorCode::InvalidType` if the type does not exist in the context.
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::NotInSummary` if there has been no matching call to `begin_summary`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_add_argument(self, name: FfiStr, ty: FfiAbcType) -> MaybeTerm {
+        get_context_mut!(@maybe_term, self, contexts, context);
+        let name = match name.into_opt_string() {
+            Some(name) => name,
+            None => return MaybeTerm::Error(ErrorCode::NullPointer),
+        };
+        context.add_argument_impl(name, ty).into()
+    }
+
+    /// Mark a break statement. (Currently unimplemented)
+    ///
+    /// # Errors
+    /// `ConstraintError::NotImplemented`
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_mark_break(self) -> ErrorCode {
+        ErrorCode::NotImplemented
+    }
+
+    /// Mark a continue statement. (Currently unimplemented)
+    ///
+    /// # Errors
+    /// `ConstraintError::NotImplemented`
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_mark_continue(self) -> ErrorCode {
+        ErrorCode::NotImplemented
+    }
+
+    /// Mark the type of the provided term.
+    ///
+    /// # Errors
+    /// [`DuplicateType`] if the type of the term has already been marked.
+    ///
+    /// [`DuplicateType`]: crate::ConstraintError::DuplicateType
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_mark_type(self, term: FfiTerm, ty: FfiAbcType) -> ErrorCode {
+        get_context_mut!(@plain, self, contexts, context);
+        context.mark_type_impl(term, ty)
+    }
+
+    /// Begin a predicate block. This indicates to the solver
+    /// that all expressions that follow can be filtered by the predicate.
+    /// Any constraint that falls within a predicate becomes a soft constraint
+    ///
+    /// In other words, it would be as if all constraints were of the form
+    /// ``p -> c``
+    /// Nested predicate blocks end up composing the predicates. E.g.,
+    /// ``begin_predicate_block(p1)`` followed by ``begin_predicate_block(p2)``
+    /// would mark all constraints as ``p1 && p2 -> c``
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidTerm` if the term does not exist in the context.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_begin_predicate_block(self, condition: FfiTerm) -> ErrorCode {
+        get_context_mut!(@plain, self, contexts, context);
+        context.begin_predicate_block_impl(condition).into()
+    }
+
+    /// End the active predicate block.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::PredicateStackEmpty` if there is no active predicate block.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_end_predicate_block(self) -> ErrorCode {
+        get_context_mut!(@plain, self, contexts, context);
+        context.constraint_helper.end_predicate_block().into()
+    }
+
+    /// Add a constraint to the system that narrows the domain of `term`.
+    ///
+    /// Any active predicates are automatically applied.
+    ///
+    /// There can only be one constraint per boundary side for each term. That is,
+    /// each term may *either* have one equality constraint (:=) *or* one
+    /// inequality constraint per side (one less / less equal, one
+    /// greater / greater equal). Violating this will result in a
+    /// `DuplicateConstraint` error.
+    ///
+    /// # Arguments
+    /// - `lhs`: The left hand side of the constraint.
+    /// - `op`: The operation of the constraint.
+    /// - `rhs`: The right hand side of the constraint.
+    /// - `id`: The identifier that the constraint system will use to refer to
+    /// the constraint. Results will reference this id.
+    ///
+    ///
+    /// # Errors
+    /// - `TypeMismatch` if the type of `term` is different from the type of
+    /// `rhs` and `op` is `ConstraintOp::Assign`
+    /// - `MaxConstraintCountExceeded` if the maximum number of constraints has
+    /// been exceeded.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_add_constraint(
+        self, lhs: FfiTerm, op: ConstraintOp, rhs: FfiTerm, id: u32,
+    ) -> ErrorCode {
+        get_context_mut!(@plain, self, contexts, context);
+        context.add_constraint_impl(lhs, op, rhs, id)
+    }
+
+    /// Mark a return statement.
+    ///
+    /// # Arguments
+    /// - `retval`: The term that corresponds to the return value. If no value
+    /// is returned, this *must* be the `Empty` term.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidTerm` if the term does not exist in the context.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_mark_return(self, retval: FfiTerm) -> ErrorCode {
+        get_context_mut!(@plain, self, contexts, context);
+        context.mark_return_impl(retval)
+    }
+
+    /// Mark the length of an array's dimension. Only valid for dynamically
+    /// sized arrays.
+    ///
+    ///
+    /// It is *strongly* preferred to use the type system to mark the variable as
+    /// a `SizedArray` type.
+    /// This should *only* be used for dynamic arrays whose size is determined later.
+    ///
+    /// # Arguments
+    /// - `term`: The array term to mark the dimension of
+    /// - `dim`: The term that corresponds to the 0-based dimension of the array.
+    /// - `size`: The size of the array.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidTerm` if the term does not exist in the context.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_mark_array_length(self, term: FfiTerm, dim: u8, size: u64) -> ErrorCode {
+        get_context_mut!(@plain, self, contexts, context);
+        context.mark_length_impl(term, dim, size)
+    }
+
+    /// Mark the range of a runtime constant. Sugar for a pair of assumptions
+    /// (var >= min) and (var <= max).
+    ///
+    /// The `lower` and `upper` terms must be literals of the same type.
+    ///
+    /// ## Notes
+    /// - The current predicate block is ignored, though the constraints *are*
+    /// added to the active summary (or global if no summary is active)
+    /// - This is not meant to be used for loop variables.
+    /// Use `mark_loop_variable` for that.
+    ///
+    /// # Arguments
+    /// - `term`: The term to mark the range of.
+    /// - `lower`: The lower bound of the range.
+    /// - `upper`: The upper bound of the range.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidTerm` if the term does not exist in the context.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::WrongType` if the two literals are not the same variant.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_mark_range(
+        self, term: FfiTerm, lower: Literal, upper: Literal,
+    ) -> ErrorCode {
+        if std::mem::discriminant(&lower) != std::mem::discriminant(&upper) {
+            return ErrorCode::WrongType;
+        }
+        get_context_mut!(@plain, self, contexts, context);
+        context.mark_range_impl(term, lower, upper)
+    }
+
+    /// Mark the return type for the active summary.
+    ///
+    /// It is not necessary to call this method for functions that do not return
+    /// a value.
+    ///
+    /// # Errors
+    /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
+    /// - `ErrorCode::InvalidContext` if the context does not exist.
+    /// - `ErrorCode::InvalidSummary` if there is no active summary
+    /// - `ErrorCode::DuplicateType` if the return type has already been marked for the summary
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_mark_return_type(self, ty: FfiAbcType) -> ErrorCode {
+        get_context_mut!(@plain, self, contexts, context);
+        context.mark_return_type_impl(ty)
+    }
+}
+
+impl ContextInner {
+    /// Implementation of the `mark_loop_variable` method for ContextInner.
+    fn mark_loop_variable_impl(
+        &mut self, var: FfiTerm, init: FfiTerm, update_rhs: FfiTerm, update_op: BinaryOp,
+    ) -> Result<(), ErrorCode> {
+        let Some(Some(var)) = self.terms.get(var.id) else {
+            return Err(ErrorCode::InvalidTerm);
+        };
+        let Some(Some(init)) = self.terms.get(init.id) else {
+            return Err(ErrorCode::InvalidTerm);
+        };
+        let Some(Some(update_rhs)) = self.terms.get(update_rhs.id) else {
+            return Err(ErrorCode::InvalidTerm);
+        };
+
+        self.constraint_helper
+            .mark_loop_variable(var, init, update_rhs, update_op)
+            .map_err(|_| ErrorCode::UnsupportedOperation)?;
+        Ok(())
+    }
+
+    fn make_call_impl(
+        &mut self, summary: FfiSummary, args: &[FfiTerm], return_dest: Option<FfiTerm>,
+    ) -> Result<FfiTerm, ErrorCode> {
+        let summary = match self.summaries.get(summary.id) {
+            Some(Some(summary)) => summary,
+            _ => return Err(ErrorCode::InvalidSummary),
+        };
+
+        let mut resolved_args = Vec::with_capacity(args.len());
+        for arg in args {
+            match self.terms.get(arg.id) {
+                Some(Some(arg)) => resolved_args.push(arg.clone()),
+                _ => return Err(ErrorCode::InvalidTerm),
+            };
+        }
+
+        let return_dest = match return_dest {
+            Some(return_dest) => match self.terms.get(return_dest.id) {
+                Some(Some(return_dest)) => Some(return_dest),
+                _ => return Err(ErrorCode::InvalidTerm),
+            },
+            None => None,
+        };
+
+        self.constraint_helper
+            .make_call(*summary, resolved_args, return_dest)
+            .map_or_else(|e| Err(e.into()), |t| Ok(self.new_term(t)))
+    }
+
+    fn begin_loop_impl(&mut self, condition: FfiTerm) -> Result<(), ErrorCode> {
+        let Some(Some(condition)) = self.terms.get(condition.id) else {
+            return Err(ErrorCode::InvalidTerm);
+        };
+
+        self.constraint_helper
+            .begin_loop(condition)
+            .map_err(Into::into)
+    }
+
+    fn add_assumption_impl(
+        &mut self, lhs: FfiTerm, rhs: FfiTerm, op: AssumptionOp,
+    ) -> Result<(), ErrorCode> {
+        let Some(Some(lhs)) = self.terms.get(lhs.id) else {
+            return Err(ErrorCode::InvalidTerm);
+        };
+        let Some(Some(rhs)) = self.terms.get(rhs.id) else {
+            return Err(ErrorCode::InvalidTerm);
+        };
+
+        self.constraint_helper
+            .add_assumption(lhs, op, rhs)
+            .map_err(Into::into)
+    }
+
+    fn end_summary_impl(&mut self) -> Result<FfiSummary, ErrorCode> {
+        match self.constraint_helper.end_summary() {
+            Err(e) => Err(e.into()),
+            Ok(summary) => self.new_summary_impl(summary),
+        }
+    }
+
+    fn add_argument_impl(&mut self, name: String, ty: FfiAbcType) -> Result<FfiTerm, ErrorCode> {
+        let ty = match self.types.get(ty.id) {
+            Some(Some(ty)) => ty.clone(),
+            _ => return Err(ErrorCode::InvalidType),
+        };
+        match self.constraint_helper.add_argument(name, &ty) {
+            Err(e) => Err(e.into()),
+            Ok(term) => Ok(self.new_term(term)),
+        }
+    }
+
+    fn mark_type_impl(&mut self, term: FfiTerm, ty: FfiAbcType) -> ErrorCode {
+        let Some(Some(term)) = self.terms.get(term.id) else {
+            return ErrorCode::InvalidTerm;
+        };
+
+        let Some(Some(ty)) = self.types.get(ty.id) else {
+            return ErrorCode::InvalidType;
+        };
+
+        match self.constraint_helper.mark_type(term, ty) {
+            Ok(()) => ErrorCode::Success,
+            Err(e) => e.into(),
+        }
+    }
+
+    fn mark_return_type_impl(&mut self, ty: FfiAbcType) -> ErrorCode {
+        let Some(Some(ty)) = self.types.get(ty.id) else {
+            return ErrorCode::InvalidType;
+        };
+
+        match self.constraint_helper.mark_return_type(ty) {
+            Ok(()) => ErrorCode::Success,
+            Err(e) => e.into(),
+        }
+    }
+
+    fn add_constraint_impl(
+        &mut self, term: FfiTerm, op: ConstraintOp, rhs: FfiTerm, id: u32,
+    ) -> ErrorCode {
+        let Some(Some(term)) = self.terms.get(term.id) else {
+            return ErrorCode::InvalidTerm;
+        };
+        let Some(Some(rhs)) = self.terms.get(rhs.id) else {
+            return ErrorCode::InvalidTerm;
+        };
+
+        match self.constraint_helper.add_constraint(term, op, rhs, id) {
+            Ok(()) => ErrorCode::Success,
+            Err(e) => e.into(),
+        }
+    }
+
+    fn mark_return_impl(&mut self, retval: FfiTerm) -> ErrorCode {
+        let term = if retval.id == 0 {
+            None
+        } else {
+            match self.terms.get(retval.id) {
+                Some(Some(term)) => Some(term.clone()),
+                _ => return ErrorCode::InvalidTerm,
+            }
+        };
+
+        match self.constraint_helper.mark_return(term) {
+            Ok(()) => ErrorCode::Success,
+            Err(e) => e.into(),
+        }
+    }
+
+    fn mark_length_impl(&mut self, term: FfiTerm, dim: u8, size: u64) -> ErrorCode {
+        let Some(Some(term)) = self.terms.get(term.id) else {
+            return ErrorCode::InvalidTerm;
+        };
+
+        match self.constraint_helper.mark_length(term, dim, size) {
+            Ok(()) => ErrorCode::Success,
+            Err(e) => e.into(),
+        }
+    }
+
+    fn mark_range_impl(&mut self, var: FfiTerm, min: Literal, max: Literal) -> ErrorCode {
+        let Some(Some(var)) = self.terms.get(var.id) else {
+            return ErrorCode::InvalidTerm;
+        };
+
+        match self.constraint_helper.mark_range(var, min, max) {
+            Ok(()) => ErrorCode::Success,
+            Err(e) => e.into(),
+        }
+    }
+
+    fn begin_predicate_block_impl(&mut self, condition: FfiTerm) -> ErrorCode {
+        let Some(Some(condition)) = self.terms.get(condition.id) else {
+            return ErrorCode::InvalidTerm;
+        };
+
+        match self.constraint_helper.begin_predicate_block(condition) {
+            Ok(()) => ErrorCode::Success,
+            Err(e) => e.into(),
         }
     }
 }

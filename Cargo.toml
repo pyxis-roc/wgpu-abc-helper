@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 [package]
 name = "abc-helper"
-version = "0.6.0"
+version = "0.6.1"
 authors = ["Benjamin Valpey"]
 edition = "2021"
 description = "An array bounds checking solver for wgsl compilers"
@@ -15,7 +15,7 @@ publish = false
 lazy_static = { version = "1.4.0" }
 strum = "0.26.3"
 strum_macros = "0.26.4"
-thiserror = "1.0.69"
+thiserror = "1.0.65"  # Note: This cannot diverge from the version in wgpu.
 rustc-hash = "1.1.0"
 log = "0.4.22"
 serde = { version = "1.0.210", features = ["derive", "rc"], optional = true }
@@ -33,7 +33,7 @@ cbindgen = { version = "0.28.0", optional = true }
 serialize = ["dep:serde", "serde_json", "bitflags/serde"]
 deserialize = ["dep:serde", "serde_json", "bitflags/serde"]
 arbitrary = ["dep:arbitrary", "bitflags/arbitrary"]
-cffi = ["dep:cbindgen", "dep:ffi-support"]
+cffi = ["dep:cbindgen", "dep:ffi-support", "serialize"]
 
 
 [lib]

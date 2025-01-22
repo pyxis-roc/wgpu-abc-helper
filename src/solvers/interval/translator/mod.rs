@@ -44,7 +44,7 @@ use crate::{
 };
 use crate::{
     Assumption, BinaryOp, CmpOp, Constraint, ConstraintId, ConstraintOp, FastHashSet, Literal,
-    Predicate, StructField,
+    Predicate, StructField, SummaryId,
 };
 use log::warn;
 use strum::VariantNames;
@@ -101,6 +101,7 @@ pub enum SolverError {
     strum_macros::VariantNames,
     strum_macros::EnumIs,
 )]
+
 pub enum IntervalKind {
     I32(I32Interval),
     I64(I64Interval),
@@ -1527,7 +1528,7 @@ fn mk_arraylen_types(
 #[allow(clippy::cast_possible_truncation)]
 #[rustfmt::skip]  // rustfmt makes this look terrible.
 pub fn enumerate_constraints<'a>(
-    module: &'a ConstraintModule, target: &'a Handle<crate::Summary>, fn_idx: u32,
+    module: &'a ConstraintModule, target: &'a Handle<crate::Summary>, id: SummaryId,
 ) -> impl Iterator<Item = &'a (Constraint, u32)> + 'a {
 
     module
@@ -1548,12 +1549,12 @@ pub fn enumerate_constraints<'a>(
 ///
 /// Also propagates errors that occur during the resolution of the constraints.
 pub(crate) fn check_constraints(
-    module: &ConstraintModule, idx: u32,
+    module: &ConstraintModule, id: SummaryId,
 ) -> Result<FastHashMap<u32, Vec<IntervalKind>>, SolverError> {
     // The target is the function that we are trying to prove bounds checks for.
     let target = module
         .summaries
-        .get(idx as usize)
+        .get(id.0)
         .ok_or(SolverError::InvalidSummary)?;
 
     let mut term_map = initialize_intervals(&module.type_map)?;
@@ -1589,7 +1590,7 @@ pub(crate) fn check_constraints(
         FastHashMap::default();
     let mut results = FastHashMap::<u32, Vec<IntervalKind>>::default();
 
-    for (constraint, idx) in enumerate_constraints(module, target, idx) {
+    for (constraint, idx) in enumerate_constraints(module, target, id) {
         log::trace!("Checking constraint {} (id: {})", constraint, idx);
         if let Some(guard) = constraint.get_guard_ref() {
             let constraint_resolution = if let Some(resolver) = predicate_to_resolver.get(guard) {
