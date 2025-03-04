@@ -3,12 +3,12 @@ version = 1
 
 [[annotations]]
 path = ["**/*.md"]
-SPDX-FileCopyrightText = "2024 University of Rochester"
+SPDX-FileCopyrightText = "2024-2025 University of Rochester"
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
 path = ["src/**/*.rs", "Cargo.toml", "Cargo.lock", ".pre-commit-config.yaml", "**/REUSE.toml", "*.yaml"]
-SPDX-FileCopyrightText = "2024 University of Rochester"
+SPDX-FileCopyrightText = "2024-2025 University of Rochester"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 
