@@ -22,9 +22,11 @@ You'll need Rust and its toolchain - including Cargo.
 
 https://www.rust-lang.org/tools/install
 
+Clone this repository, and then in the cloned directory, run
+
 `cargo build --release --features=cffi`
 
-This will build the code. By default, the build files will be placed in `target/release`
+This will build the code and enable the FFI features. By default, the build files will be placed in `target/release`
 
 To include and link against this library, use the directories:
 include: `/path/to/wgpu-abc-helper/target/release/include`
