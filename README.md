@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 abc_helper provides ffi bindings for C++.
 
-the `ffi_examples` folder contains an example project that shows how to use this lirbary from C++.
+the `ffi_examples` folder contains an example project that shows how to use this library from C++.
 
 
 # Building
