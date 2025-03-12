@@ -1968,7 +1968,7 @@ impl From<SolverError> for SolverErrorCode {
                 SolverErrorCode::TypeMismatch
             }
             SE::Unexpected(_) => SolverErrorCode::Unexpected,
-            SE::Unsupported(_) => SolverErrorCode::Unsupported,
+            SE::Unsupported(_, _, _) => SolverErrorCode::Unsupported,
             SE::DeadCode => SolverErrorCode::DeadCode,
         }
     }

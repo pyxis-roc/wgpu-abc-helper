@@ -9,6 +9,7 @@ use super::{
     IntervalError, IntervalGe, IntervalGt, IntervalKind, IntervalLe, IntervalLt, IntervalMax,
     IntervalMin, IntervalMul, IntervalNe, IntervalSub, SolverError, U32Interval, Union,
 };
+use crate::macros::error_if_different_variants;
 
 /// Map the operation to an interval that can be used to refine the term boundaries.
 /// `literal` must be an expression that resolves to a
@@ -268,6 +269,8 @@ impl<'resolver> Resolver<'resolver> {
             Term::Predicate(_) => Err(SolverError::TypeMismatch {
                 expected: "Boolean",
                 have: "Literal",
+                file: file!(),
+                line: line!(),
             }),
             Term::Literal(l) => Ok(resolve_literal_cmp_literal(l, op, literal)),
             Term::Var(_) | Term::Expr(_) => {
@@ -300,6 +303,8 @@ impl<'resolver> Resolver<'resolver> {
             Term::Predicate(_) => Err(SolverError::TypeMismatch {
                 expected: "Bool",
                 have: literal.variant_name(),
+                file: file!(),
+                line: line!(),
             }),
             Term::Literal(l) => Ok(resolve_literal_cmp_literal(l, op, literal)),
             Term::Var(_) | Term::Expr(_) => {
@@ -339,14 +344,19 @@ impl<'resolver> Resolver<'resolver> {
             return Ok(BoolInterval::Empty);
         }
 
-        match op {
+        let result = match op {
             CmpOp::Eq => Ok(lhs_intrvl.interval_eq(&rhs_intrvl)),
             CmpOp::Geq => Ok(lhs_intrvl.interval_ge(&rhs_intrvl)),
             CmpOp::Gt => Ok(lhs_intrvl.interval_gt(&rhs_intrvl)),
             CmpOp::Leq => Ok(lhs_intrvl.interval_le(&rhs_intrvl)),
             CmpOp::Lt => Ok(lhs_intrvl.interval_lt(&rhs_intrvl)),
             CmpOp::Neq => Ok(lhs_intrvl.interval_ne(&rhs_intrvl)),
+        };
+
+        if let Ok(BoolInterval::Unknown) = result {
+            error_if_different_variants!(lhs_intrvl, rhs_intrvl);
         }
+        result
     }
     /// Resolve the comparison between two terms into an interval, and optionally update the
     /// intervals being compared.
@@ -439,6 +449,8 @@ impl<'resolver> Resolver<'resolver> {
             return Err(SolverError::TypeMismatch {
                 expected: lhs_intrvl.variant_name(),
                 have: rhs_intrvl.variant_name(),
+                file: file!(),
+                line: line!(),
             });
         }
 
@@ -537,27 +549,6 @@ impl<'resolver> Resolver<'resolver> {
     }
 }
 
-/// Resolves the intervals, and returns said interval if it is empty.
-macro_rules! resolve_and_return_if_empty {
-    ($self:expr, $($interval:expr),+ $(,)?) => {
-        ($(
-            { let new = $self.resolve_term($interval)?; if new.is_empty() { return Ok(new); } new }
-        ),+)
-    };
-}
-
-macro_rules! error_if_different_variants {
-    ($a:expr, $b:expr) => {{
-        let a = &$a;
-        let b = &$b;
-        if !IntervalKind::is_same_variant(a, b) {
-            return Err(SolverError::TypeMismatch {
-                expected: a.variant_name(),
-                have: b.variant_name(),
-            });
-        }
-    }};
-}
 impl<'resolver> Resolver<'resolver> {
     /// Set the recompute flag.
     ///
@@ -613,8 +604,13 @@ impl<'resolver> Resolver<'resolver> {
             BinaryOp::Times => IntervalKind::interval_mul,
             BinaryOp::Div => IntervalKind::interval_div,
             BinaryOp::Mod => IntervalKind::interval_mod,
+            BinaryOp::Shr => IntervalKind::interval_shr,
             _ => {
-                return Err(SolverError::Unsupported(op.variant_name()));
+                return Err(SolverError::Unsupported(
+                    op.variant_name(),
+                    file!(),
+                    line!(),
+                ));
             }
         };
 
@@ -824,7 +820,6 @@ impl Resolver<'_> {
             } => {
                 let lhs_interval = self.resolve_term(lhs)?;
                 let rhs_interval = self.resolve_term(rhs)?;
-                error_if_different_variants!(lhs_interval, rhs_interval);
                 self.resolve_comparison(lhs, rhs, *op)
             }
             Constraint::Identity { ref term, .. } => match self.resolve_term(term)?.as_ref() {
@@ -832,6 +827,8 @@ impl Resolver<'_> {
                 other => Err(SolverError::TypeMismatch {
                     expected: "Bool",
                     have: other.variant_name(),
+                    file: file!(),
+                    line: line!(),
                 }),
             },
         }
@@ -888,20 +885,28 @@ impl Resolver<'_> {
                     None | Some(IntervalKind::Top) => Ok(BoolInterval::Unknown),
                     Some(&IntervalKind::Bool(interval)) => Ok(interval),
                     Some(IntervalKind::I32(_)) => Err(SolverError::TypeMismatch {
+                        file: file!(),
+                        line: line!(),
                         expected: "Bool",
                         have: "I32",
                     }),
                     Some(IntervalKind::U32(_)) => Err(SolverError::TypeMismatch {
                         expected: "Bool",
                         have: "U32",
+                        file: file!(),
+                        line: line!(),
                     }),
                     Some(IntervalKind::I64(_)) => Err(SolverError::TypeMismatch {
                         expected: "Bool",
                         have: "I64",
+                        file: file!(),
+                        line: line!(),
                     }),
                     Some(IntervalKind::U64(_)) => Err(SolverError::TypeMismatch {
                         expected: "Bool",
                         have: "U64",
+                        file: file!(),
+                        line: line!(),
                     }),
                 }
             }
@@ -980,18 +985,26 @@ impl Resolver<'_> {
                     Some(IntervalKind::I32(_)) => Err(SolverError::TypeMismatch {
                         expected: "Bool",
                         have: "I32",
+                        file: file!(),
+                        line: line!(),
                     }),
                     Some(IntervalKind::U32(_)) => Err(SolverError::TypeMismatch {
                         expected: "Bool",
                         have: "U32",
+                        file: file!(),
+                        line: line!(),
                     }),
                     Some(IntervalKind::I64(_)) => Err(SolverError::TypeMismatch {
                         expected: "Bool",
                         have: "I64",
+                        file: file!(),
+                        line: line!(),
                     }),
                     Some(IntervalKind::U64(_)) => Err(SolverError::TypeMismatch {
                         expected: "Bool",
                         have: "U64",
+                        file: file!(),
+                        line: line!(),
                     }),
                 }
             }

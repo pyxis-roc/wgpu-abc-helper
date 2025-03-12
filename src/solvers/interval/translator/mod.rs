@@ -29,7 +29,7 @@ use super::{
     ops::{
         Intersect, IntersectAssign, IntervalAbs, IntervalAdd, IntervalDiv, IntervalEq, IntervalGe,
         IntervalGt, IntervalLe, IntervalLt, IntervalMax, IntervalMin, IntervalMod, IntervalMul,
-        IntervalNe, IntervalNeg, IntervalSub, Union, UnionAssign,
+        IntervalNe, IntervalNeg, IntervalShr, IntervalSub, Union, UnionAssign,
     },
     solver, I64Interval, U64Interval, WrappedInterval,
 };
@@ -49,6 +49,8 @@ use thiserror;
 
 mod resolver;
 use resolver::Resolver;
+
+use crate::macros::error_if_different_variants;
 
 const I32_MAX_AS_I64: i64 = i32::MAX as i64;
 
@@ -71,15 +73,17 @@ pub enum SolverError {
     #[error("SSA Violation: {0}")]
     SsaViolation(Term),
 
-    #[error("Type mismatch: expected {expected}, have: {have}")]
+    #[error("[file: {file}, line: {line}] Type mismatch: expected {expected}, have: {have}")]
     TypeMismatch {
         expected: &'static str,
         have: &'static str,
+        file: &'static str,
+        line: u32,
     },
     #[error("Unexpected: {0}")]
     Unexpected(&'static str),
-    #[error("Unsupported operation: {0}")]
-    Unsupported(&'static str),
+    #[error("[file: {1}, line: {2}] Unsupported operation: {0}")]
+    Unsupported(&'static str, &'static str, u32),
     #[error("Top-level assumptions cannot be satisfied.")]
     DeadCode,
 }
@@ -582,6 +586,52 @@ impl IntervalKind {
             (IntervalKind::Top, IntervalKind::Top) => Ok(IK::Top),
             (a, b) => Err(IntervalError::InvalidBinOp("Modulo", a.variant_name(), b.variant_name())),
         )
+    }
+
+    // interval_shl is not implemented well. We have to resolve result to top.
+    #[allow(clippy::unnecessary_wraps)]
+    fn interval_shl(&self, other: &Self) -> Result<Self, IntervalError> {
+        if self.is_empty() || other.is_empty() {
+            Ok(IntervalKind::U32(U32Interval::Empty))
+        } else {
+            warn!("Shl is not implemented for any type. Overapproximating to Top.");
+            Ok(IntervalKind::Top)
+        }
+    }
+
+    fn interval_shr(&self, other: &Self) -> Result<Self, IntervalError> {
+        if self.is_empty() || other.is_empty() {
+            return Ok(IntervalKind::U32(U32Interval::Empty));
+        }
+        // rhs of shift can only be a u32
+        match (self, other) {
+            (IntervalKind::I32(interval), IntervalKind::U32(rhs)) => {
+                Ok(interval.interval_shr(rhs).into())
+            }
+            (IntervalKind::I64(interval), IntervalKind::U32(rhs)) => {
+                Ok(interval.interval_shr(rhs).into())
+            }
+            (IntervalKind::U32(interval), IntervalKind::U32(rhs)) => {
+                Ok(interval.interval_shr(rhs).into())
+            }
+            (IntervalKind::U64(interval), IntervalKind::U32(rhs)) => {
+                Ok(interval.interval_shr(rhs).into())
+            }
+            _ => Err(IntervalError::InvalidBinOp(
+                "Right Shift",
+                self.variant_name(),
+                other.variant_name(),
+            )),
+        }
+        // todo!();
+        // same_arm_impl!(
+        //     a, b, orig, self, other,
+        //     Ok(a.interval_shr(b).into()),
+        //     Ok(IK::Top),
+        //     Err(IntervalError::InvalidOp("Shr", "Bool")),
+        //     (IntervalKind::Top, IntervalKind::Top) => Ok(IK::Top),
+        //     (a, b) => Err(IntervalError::InvalidBinOp("Shift Right", a.variant_name(), b.variant_name())),
+        // )
     }
 
     fn interval_max(&self, rhs: &Self) -> Result<Self, IntervalError> {

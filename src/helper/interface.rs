@@ -59,16 +59,21 @@ pub enum ConstraintError {
 #[repr(C)]
 pub struct SummaryId(pub(crate) usize);
 
+impl From<u32> for SummaryId {
+    fn from(id: u32) -> Self {
+        SummaryId(id as usize)
+    }
+}
+impl From<usize> for SummaryId {
+    fn from(id: usize) -> Self {
+        SummaryId(id)
+    }
+}
+
 impl std::ops::Deref for SummaryId {
     type Target = usize;
     fn deref(&self) -> &usize {
         &self.0
-    }
-}
-
-impl From<usize> for SummaryId {
-    fn from(id: usize) -> Self {
-        SummaryId(id)
     }
 }
 

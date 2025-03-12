@@ -1,5 +1,4 @@
 //! Traits for operations on intervals.
-
 use crate::solvers::interval::CompoundInterval;
 
 use super::{BasicInterval, BoolInterval, Interval, IntervalBoundary, WrappedInterval};
@@ -67,6 +66,11 @@ where
 pub trait IntervalDiv<Rhs = Self>: Interval {
     type Output: Interval<Inner = <Self as Interval>::Inner>;
     fn interval_div(&self, rhs: &Rhs) -> Self::Output;
+}
+
+pub trait IntervalShr<Rhs>: Interval {
+    type Output: Interval<Inner = <Self as Interval>::Inner>;
+    fn interval_shr(&self, rhs: &Rhs) -> Self::Output;
 }
 
 pub trait IntervalMod<Rhs = Self>: Interval {
@@ -555,8 +559,199 @@ commutative_op_impl!(T, IntervalAdd, interval_add);
 commutative_op_impl!(T, IntervalMul, interval_mul);
 commutative_op_impl!(T, IntervalMax, interval_max);
 commutative_op_impl!(T, IntervalMin, interval_min);
-
 noncommutative_op_impl!(T, IntervalSub, interval_sub);
+
+macro_rules! basic_interval_shr_impl {
+    ($ty:ty $(,)?) => {
+        impl IntervalShr<BasicInterval<u32>> for BasicInterval<$ty> {
+            type Output = BasicInterval<$ty>;
+            fn interval_shr(&self, rhs: &BasicInterval<u32>) -> Self::Output {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
+                    return BasicInterval::new(1, 0);
+                }
+                if rhs.is_top() || ((rhs.get_upper().0 - rhs.get_lower().0) >= <$ty>::BITS as _) {
+                    return BasicInterval::new(0, self.upper);
+                }
+                // The number of bits to shift is the value of the right-hand side modulo the bit width.
+                // source: https://www.w3.org/TR/WGSL/#bit-expr
+                // When the right hand side is an interval, then shift according to the modulo of said interval.
+                let lower_mod_class = rhs.get_lower().0 / <$ty>::BITS;
+                let upper_mod_class = rhs.get_upper().0 / <$ty>::BITS;
+                let lower_mod = rhs.get_lower().0 % <$ty>::BITS;
+                let upper_mod = rhs.get_upper().0 % <$ty>::BITS;
+
+                if lower_mod_class != upper_mod_class {
+                    BasicInterval::new(self.lower >> (lower_mod.max(upper_mod)), self.upper)
+                } else {
+                    let lower = self.lower >> lower_mod;
+                    let upper = self.upper >> upper_mod;
+                    BasicInterval::new(lower, upper)
+                }
+            }
+        }
+    };
+}
+
+basic_interval_shr_impl!(u32);
+basic_interval_shr_impl!(u64);
+basic_interval_shr_impl!(i32);
+basic_interval_shr_impl!(i64);
+
+macro_rules! compound_interval_shr_impl {
+    ($ty:ty $(,)?) => {
+        impl IntervalShr<BasicInterval<u32>> for CompoundInterval<$ty> {
+            type Output = WrappedInterval<$ty>;
+            fn interval_shr(&self, rhs: &BasicInterval<u32>) -> Self::Output {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
+                    return WrappedInterval::Empty;
+                }
+                let mut new = CompoundInterval::new();
+                for interval in self.iter() {
+                    new.insert(interval.interval_shr(rhs));
+                }
+                new.into()
+            }
+        }
+        impl IntervalShr<CompoundInterval<u32>> for BasicInterval<$ty> {
+            type Output = WrappedInterval<$ty>;
+            fn interval_shr(&self, rhs: &CompoundInterval<u32>) -> Self::Output {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
+                    return WrappedInterval::Empty;
+                }
+                let mut new = CompoundInterval::new();
+                for interval in rhs.iter() {
+                    new.insert(self.interval_shr(interval));
+                }
+                new.into()
+            }
+        }
+        impl IntervalShr<CompoundInterval<u32>> for CompoundInterval<$ty> {
+            type Output = WrappedInterval<$ty>;
+            fn interval_shr(&self, rhs: &CompoundInterval<u32>) -> Self::Output {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
+                    return WrappedInterval::Empty;
+                }
+                // get the lower and upper for rhs's compound interval, we are
+                // going to overapproximate the rhs
+                let mut new = CompoundInterval::new();
+                // compound interval will just use the max...
+
+                for interval in self.iter() {
+                    for rhs_interval in rhs.iter() {
+                        new.insert(interval.interval_shr(rhs_interval));
+                    }
+                }
+                new.into()
+            }
+        }
+    };
+}
+compound_interval_shr_impl!(u32);
+compound_interval_shr_impl!(i32);
+compound_interval_shr_impl!(u64);
+compound_interval_shr_impl!(i64);
+
+macro_rules! wrapped_interval_shr_impl {
+    ($ty:ty $(,)?) => {
+        impl IntervalShr<BasicInterval<u32>> for WrappedInterval<$ty> {
+            type Output = WrappedInterval<$ty>;
+            fn interval_shr(&self, rhs: &BasicInterval<u32>) -> Self::Output {
+                match self {
+                    WrappedInterval::Empty => WrappedInterval::Empty,
+                    WrappedInterval::Top => WrappedInterval::Basic(
+                        BasicInterval::new(self.get_lower().0, self.get_upper().0)
+                            .interval_shr(rhs),
+                    ),
+                    WrappedInterval::Basic(interval) => {
+                        WrappedInterval::Basic(interval.interval_shr(rhs))
+                    }
+                    WrappedInterval::Compound(intervals) => intervals.interval_shr(rhs).into(),
+                }
+            }
+        }
+
+        impl IntervalShr<WrappedInterval<u32>> for WrappedInterval<$ty> {
+            type Output = WrappedInterval<$ty>;
+            fn interval_shr(&self, rhs: &WrappedInterval<u32>) -> Self::Output {
+                match (self, rhs) {
+                    (WrappedInterval::Empty, _) | (_, WrappedInterval::Empty) => {
+                        WrappedInterval::Empty
+                    }
+                    (WrappedInterval::Top, WrappedInterval::Top) => WrappedInterval::Top,
+                    (WrappedInterval::Basic(a), WrappedInterval::Top) => {
+                        WrappedInterval::Basic(BasicInterval::new(0, a.get_upper().0))
+                    }
+                    (WrappedInterval::Top, WrappedInterval::Basic(b)) => WrappedInterval::Basic(
+                        BasicInterval::new(self.get_lower().0, self.get_upper().0).interval_shr(b),
+                    ),
+                    (WrappedInterval::Top, WrappedInterval::Compound(intervals)) => {
+                        BasicInterval::new(self.get_lower().0, self.get_upper().0)
+                            .interval_shr(intervals)
+                            .into()
+                    }
+                    (WrappedInterval::Compound(intervals), WrappedInterval::Top) => intervals
+                        .interval_shr(&BasicInterval::new(0, rhs.get_upper().0))
+                        .into(),
+                    (WrappedInterval::Basic(interval), WrappedInterval::Basic(rhs)) => {
+                        interval.interval_shr(rhs).into()
+                    }
+                    (WrappedInterval::Basic(interval), WrappedInterval::Compound(intervals)) => {
+                        interval.interval_shr(intervals).into()
+                    }
+                    (WrappedInterval::Compound(intervals), WrappedInterval::Basic(interval)) => {
+                        intervals.interval_shr(interval).into()
+                    }
+                    (WrappedInterval::Compound(a), WrappedInterval::Compound(b)) => {
+                        a.interval_shr(b).into()
+                    }
+                }
+            }
+        }
+    };
+}
+
+wrapped_interval_shr_impl!(u32);
+wrapped_interval_shr_impl!(i32);
+wrapped_interval_shr_impl!(u64);
+wrapped_interval_shr_impl!(i64);
+
+// impl IntervalShr<WrappedInterval<u32>> for WrappedInterval<i32> {
+//     type Output = WrappedInterval<i32>;
+//     fn interval_shr(&self, rhs: &WrappedInterval<u32>) -> Self::Output {
+//         match (self, rhs) {
+//             (WrappedInterval::Empty, _) | (_, WrappedInterval::Empty) => WrappedInterval::Empty,
+//             (WrappedInterval::Top, _) | (_, WrappedInterval::Top) => WrappedInterval::Top,
+//             (WrappedInterval::Basic(a), WrappedInterval::Basic(b)) => a.interval_shr(b),
+//             (WrappedInterval::Basic(interval), WrappedInterval::Compound(intervals))
+//             | (WrappedInterval::Compound(intervals), WrappedInterval::Basic(interval)) => {
+//                 intervals.interval_shr(interval)
+//             }
+//             (WrappedInterval::Compound(a), WrappedInterval::Compound(b)) => a.interval_shr(b),
+//         }
+//     }
+// }
+
+// impl<T> IntervalShr<WrappedInterval<u32>> for WrappedInterval<T>
+// where
+//     T: IntervalBoundary,
+//     BasicInterval<T>: IntervalShr<BasicInterval<u32>, Output = WrappedInterval<T>>,
+//     CompoundInterval<T>: IntervalShr<BasicInterval<u32>, Output = WrappedInterval<T>>,
+//     CompoundInterval<T>: IntervalShr<CompoundInterval<u32>, Output = WrappedInterval<T>>,
+// {
+//     type Output = WrappedInterval<T>;
+//     fn interval_shr(&self, rhs: &WrappedInterval<u32>) -> Self::Output {
+//         match (self, rhs) {
+//             (WrappedInterval::Empty, _) | (_, WrappedInterval::Empty) => WrappedInterval::Empty,
+//             (WrappedInterval::Top, _) | (_, WrappedInterval::Top) => WrappedInterval::Top,
+//             (WrappedInterval::Basic(a), WrappedInterval::Basic(b)) => a.interval_shr(b),
+//             (WrappedInterval::Basic(interval), WrappedInterval::Compound(intervals))
+//             | (WrappedInterval::Compound(intervals), WrappedInterval::Basic(interval)) => {
+//                 intervals.interval_shr(interval)
+//             }
+//             (WrappedInterval::Compound(a), WrappedInterval::Compound(b)) => a.interval_shr(b),
+//         }
+//     }
+// }
 
 impl<T: IntervalBoundary + num::Signed> IntervalNeg for BasicInterval<T> {
     type Output = WrappedInterval<T>;
@@ -1831,6 +2026,42 @@ mod tests {
         let y = BasicInterval::new(y.0, y.1);
 
         let result = x.interval_sub(&y);
+        assert_eq!(result.into(), expected);
+    }
+
+    #[rstest]
+    #[case::both_units((4u32, 4u32), (2u32, 2u32), WrappedInterval::Basic(BasicInterval::new(1u32, 1u32)))]
+    #[case::signed_basic((-4i32, 8), (2u32, 2u32), WrappedInterval::Basic(BasicInterval::from_literals(-1i32, 2)))]
+    #[case::rhs_needs_mod((100u32, 200u32), (34u32, 34u32), WrappedInterval::Basic(BasicInterval::new(25u32, 50u32)))]
+    #[case::rhs_zero((4u32, 8u32), (0u32, 0u32), WrappedInterval::Basic(BasicInterval::from_literals(4u32, 8u32)))]
+    #[case::rhs_wraps_mod_boundary((4u32, 8u32), (2u32, 34u32), WrappedInterval::Basic(BasicInterval::from_literals(0, 8u32)))]
+    fn test_interval_shr_basic<T>(
+        #[case] x: (T, T), #[case] y: (u32, u32), #[case] expected: WrappedInterval<T>,
+    ) where
+        T: IntervalBoundary,
+        BasicInterval<T>: IntervalShr<BasicInterval<u32>>,
+        <BasicInterval<T> as IntervalShr<BasicInterval<u32>>>::Output: Into<WrappedInterval<T>>,
+    {
+        let x = BasicInterval::new(x.0, x.1);
+        let y = BasicInterval::new(y.0, y.1);
+
+        let result = x.interval_shr(&y);
+        assert_eq!(result.into(), expected);
+    }
+
+    #[rstest]
+    #[case::wrapped_basic(make_intervals!((4u32, 8u32)), (2u32, 2u32), WrappedInterval::Basic(BasicInterval::new(1u32, 2u32)))]
+    #[case::wrapped_compound(make_intervals!((4u32, 8u32), (200u32, 250u32)), (2u32, 2u32), make_intervals!((1u32, 2u32), (50u32, 62u32)))]
+    fn test_interval_shr_wrapped<T>(
+        #[case] x: WrappedInterval<T>, #[case] y: (u32, u32), #[case] expected: WrappedInterval<T>,
+    ) where
+        T: IntervalBoundary,
+        WrappedInterval<T>: IntervalShr<BasicInterval<u32>>,
+        <WrappedInterval<T> as IntervalShr<BasicInterval<u32>>>::Output: Into<WrappedInterval<T>>,
+    {
+        let y = BasicInterval::new(y.0, y.1);
+
+        let result = x.interval_shr(&y);
         assert_eq!(result.into(), expected);
     }
 }
