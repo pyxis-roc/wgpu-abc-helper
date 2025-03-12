@@ -31,7 +31,7 @@ use crate::{
 /// - The second argument is an identifier that will hold the `RwLockWriteGuard`.
 /// - The third argument is the identifier that will hold the mutable reference to the `ContextInner`.
 ///
-/// This is a macro instead of a function as the RwLockWriteGuard must be in the same scope as the mutable reference to the `ContextInner`.
+/// This is a macro instead of a function as the `RwLockWriteGuard` must be in the same scope as the mutable reference to the `ContextInner`.
 /// This is also just boilerplate that is repeated in many functions in order to access the `ContextInner` from the context handle.
 macro_rules! get_context_mut {
     (@maybe_term, $context_obj:expr, $container_var:ident, $result_var:ident $(,)?) => {
@@ -200,7 +200,6 @@ impl From<crate::ConstraintError> for ErrorCode {
         match e {
             E::UnsupportedLoopOperation => ErrorCode::UnsupportedOperation,
             E::PredicateStackEmpty => ErrorCode::PredicateStackEmpty,
-            E::SummaryError => ErrorCode::InvalidSummary,
             E::DuplicateType => ErrorCode::DuplicateType,
             E::NotImplemented(..) => ErrorCode::NotImplemented,
             E::NotInLoopContext => ErrorCode::NotInLoopContext,
@@ -214,7 +213,7 @@ impl From<crate::ConstraintError> for ErrorCode {
             E::SolverError(_) => ErrorCode::SolverError,
             E::ConstraintLimitExceeded => ErrorCode::ConstraintLimitExceeded,
             E::SummaryLimitExceeded => ErrorCode::SummaryLimitExceeded,
-            E::InvalidSummary => ErrorCode::InvalidSummary,
+            E::InvalidSummary | E::SummaryError => ErrorCode::InvalidSummary,
         }
     }
 }
@@ -222,7 +221,7 @@ impl From<crate::ConstraintError> for ErrorCode {
 impl From<Result<(), crate::ConstraintError>> for ErrorCode {
     fn from(r: Result<(), crate::ConstraintError>) -> Self {
         match r {
-            Ok(_) => ErrorCode::Success,
+            Ok(()) => ErrorCode::Success,
             Err(e) => e.into(),
         }
     }
@@ -521,6 +520,7 @@ pub struct FfiTerm {
 
 impl ContextInner {
     /// Implementation of `new_summary` for the `ContextInner` struct.
+    #[allow(clippy::unnecessary_wraps)] // Future proofing
     fn new_summary_impl(&mut self, s: SummaryId) -> Result<FfiSummary, ErrorCode> {
         if let Some(id) = self.reusable_summary_ids.pop() {
             self.summaries[id] = Some(s);
@@ -548,11 +548,11 @@ impl ContextInner {
     fn new_term(&mut self, t: Term) -> FfiTerm {
         if let Some(id) = self.reusable_term_ids.pop() {
             let id = id.get();
-            self.terms[id] = Some(t.into());
+            self.terms[id] = Some(t);
             FfiTerm { id }
         } else {
             let id = self.terms.len();
-            self.terms.push(Some(t.into()));
+            self.terms.push(Some(t));
             FfiTerm { id }
         }
     }
@@ -751,7 +751,7 @@ impl Context {
         let rhs = context.get_term(rhs);
         match (lhs, rhs) {
             (Ok(lhs), Ok(rhs)) => {
-                MaybeTerm::Success(context.new_term(Term::new_logical_and(&lhs, &rhs)))
+                MaybeTerm::Success(context.new_term(Term::new_logical_and(lhs, rhs)))
             }
             _ => MaybeTerm::Error(ErrorCode::InvalidTerm),
         }
@@ -780,7 +780,7 @@ impl Context {
         let rhs = context.get_term(rhs);
         match (lhs, rhs) {
             (Ok(lhs), Ok(rhs)) => {
-                MaybeTerm::Success(context.new_term(Term::new_logical_or(&lhs, &rhs)))
+                MaybeTerm::Success(context.new_term(Term::new_logical_or(lhs, rhs)))
             }
             _ => MaybeTerm::Error(ErrorCode::InvalidTerm),
         }
@@ -813,7 +813,7 @@ impl Context {
         let rhs = context.get_term(rhs);
         match (lhs, rhs) {
             (Ok(lhs), Ok(rhs)) => {
-                MaybeTerm::Success(context.new_term(Term::new_comparison(op, &lhs, &rhs))).into()
+                MaybeTerm::Success(context.new_term(Term::new_comparison(op, lhs, rhs)))
             }
             _ => MaybeTerm::Error(ErrorCode::InvalidTerm),
         }
@@ -833,20 +833,13 @@ impl Context {
     pub extern "C" fn abc_new_not(self, t: FfiTerm) -> MaybeTerm {
         get_context_mut!(@maybe_term, self, contexts, context);
         match context.get_term(t) {
-            Ok(t) => MaybeTerm::Success(context.new_term(Term::new_not(&t))).into(),
+            Ok(t) => MaybeTerm::Success(context.new_term(Term::new_not(t))),
             Err(e) => MaybeTerm::Error(e),
         }
     }
 }
 
 impl Context {
-    /// Helper method that resolves `ty` to the inner type, ensuring that it is an `AbcScalar` variant.
-    ///
-    /// # Errors
-    /// - [`ErrorCode::PoisonedLock`] is returned if the lock on the global Types container is poisoned.
-    /// - [`ErrorCode::InvalidTerm`] is returned if the type does not exist in the library's collection.
-    /// - [`ErrorCode::WrongType`] is returned if the type is not a scalar type.
-
     /// Create a new variable term, with the provided name.
     ///
     /// It is important to remember that terms must have unique names! All terms
@@ -923,7 +916,7 @@ impl Context {
         let rhs = context.get_term(rhs);
         match (lhs, rhs) {
             (Ok(lhs), Ok(rhs)) => {
-                MaybeTerm::Success(context.new_term(Term::new_cmp_op(op, &lhs, &rhs))).into()
+                MaybeTerm::Success(context.new_term(Term::new_cmp_op(op, lhs, rhs)))
             }
             _ => MaybeTerm::Error(ErrorCode::InvalidTerm),
         }
@@ -943,7 +936,7 @@ impl Context {
         let index = context.get_term(index);
         match (base, index) {
             (Ok(base), Ok(index)) => {
-                MaybeTerm::Success(context.new_term(Term::new_index_access(base, index))).into()
+                MaybeTerm::Success(context.new_term(Term::new_index_access(base, index)))
             }
             _ => MaybeTerm::Error(ErrorCode::InvalidTerm),
         }
@@ -982,7 +975,7 @@ impl Context {
         };
 
         MaybeTerm::Success(context.new_term(Term::new_struct_access(
-            &base,
+            base,
             field,
             ty.clone(),
             field_idx,
@@ -1055,7 +1048,7 @@ impl Context {
             Err(e) => return MaybeTerm::Error(e),
         };
 
-        MaybeTerm::Success(context.new_term(Term::new_binary_op(op, &lhs, &rhs)))
+        MaybeTerm::Success(context.new_term(Term::new_binary_op(op, lhs, rhs)))
     }
 
     /// Create a new unary operation term, e.g. `-x`.
@@ -1075,7 +1068,7 @@ impl Context {
             Err(e) => return MaybeTerm::Error(e),
         };
 
-        MaybeTerm::Success(context.new_term(Term::new_unary_op(op, &term)))
+        MaybeTerm::Success(context.new_term(Term::new_unary_op(op, term)))
     }
 
     /// Create a new term corresponding to wgsl's [`max`](https://www.w3.org/TR/WGSL/#max-float-builtin) bulitin.
@@ -1100,7 +1093,7 @@ impl Context {
             Err(e) => return MaybeTerm::Error(e),
         };
 
-        MaybeTerm::Success(context.new_term(Term::new_max(&lhs, &rhs)))
+        MaybeTerm::Success(context.new_term(Term::new_max(lhs, rhs)))
     }
 
     /// Create a new term corresponding to wgsl's [`min`](https://www.w3.org/TR/WGSL/#min-float-builtin) builtin.
@@ -1125,7 +1118,7 @@ impl Context {
             Err(e) => return MaybeTerm::Error(e),
         };
 
-        MaybeTerm::Success(context.new_term(Term::new_min(&lhs, &rhs)))
+        MaybeTerm::Success(context.new_term(Term::new_min(lhs, rhs)))
     }
 
     /// Create a new term akin to wgsl's [`select`](https://www.w3.org/TR/WGSL/#select-builtin) bulitin.
@@ -1165,7 +1158,7 @@ impl Context {
             Err(e) => return MaybeTerm::Error(e),
         };
 
-        MaybeTerm::Success(context.new_term(Term::new_select(&iftrue, &iffalse, &predicate)))
+        MaybeTerm::Success(context.new_term(Term::new_select(iftrue, iffalse, predicate)))
     }
 
     /// Helper method for creating new vector terms in a DRY fashion. Also works for matrices.
@@ -1282,7 +1275,7 @@ impl Context {
             Err(e) => return MaybeTerm::Error(e),
         };
 
-        MaybeTerm::Success(context.new_term(Term::make_array_length(&term)))
+        MaybeTerm::Success(context.new_term(Term::make_array_length(term)))
     }
 
     /// Create a new `store` term.
@@ -1448,7 +1441,7 @@ impl Context {
             Err(e) => return MaybeTerm::Error(e),
         };
 
-        MaybeTerm::Success(context.new_term(Term::new_dot(&lhs, &rhs)))
+        MaybeTerm::Success(context.new_term(Term::new_dot(lhs, rhs)))
     }
 
     /// Create a new `mat2x2` term
@@ -2019,7 +2012,8 @@ impl ConstraintSolution {
     /// This must be called to avoid a memory leak.
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_free_solution(solution: Self) {
-        drop(solution)
+        #[allow(clippy::drop_non_drop)] // Explicit > implicit
+        drop(solution);
     }
 }
 
@@ -2057,9 +2051,8 @@ impl Context {
         };
 
         // Get the `id` from the summary.
-        let id = match context.get_summary(summary) {
-            Ok(s) => s,
-            Err(_) => return MaybeSolution::Error(SolverErrorCode::InvalidSummary),
+        let Ok(id) = context.get_summary(summary) else {
+            return MaybeSolution::Error(SolverErrorCode::InvalidSummary);
         };
 
         let result = match context.constraint_helper.solve(id) {
@@ -2085,6 +2078,7 @@ impl Context {
     /// Serializes the constraint system to json.
     /// The input should be a file path where the serialized json will be written.
     #[unsafe(no_mangle)]
+    #[allow(clippy::needless_pass_by_value)]
     pub extern "C" fn abc_serialize_constraints(self, path: FfiStr) -> ErrorCode {
         use serde::Serialize;
 
@@ -2096,14 +2090,12 @@ impl Context {
             return ErrorCode::InvalidContext;
         };
 
-        let path = match path.as_opt_str() {
-            Some(p) => p,
-            None => return ErrorCode::NullPointer,
+        let Some(path) = path.as_opt_str() else {
+            return ErrorCode::NullPointer;
         };
 
-        let f = match std::fs::File::create(path) {
-            Ok(f) => f,
-            Err(_) => return ErrorCode::FileError,
+        let Ok(f) = std::fs::File::create(path) else {
+            return ErrorCode::FileError;
         };
 
         let mut serializer = serde_json::Serializer::new(f);
@@ -2159,7 +2151,7 @@ impl Context {
     /// - `args`: An array containing the arguments that are passed to the function.
     /// - `num_args`: The size of the `args` array.
     /// - `return_dest`: A fresh variable term that will hold the return value. If the return value is not used,
-    /// then this must be the `Empty` term.
+    ///   then this must be the `Empty` term.
     ///
     /// This will add the constraints of the summary to the constraint system, with
     /// the arguments substituted with `args`, and the return value substituted with `return_dest`.
@@ -2177,8 +2169,7 @@ impl Context {
     pub unsafe extern "C" fn abc_new_call(
         self, summary: FfiSummary, args: *const FfiTerm, num_args: u32, return_dest: FfiTerm,
     ) -> MaybeTerm {
-        let resolved_args: &[FfiTerm];
-        if num_args != 0 {
+        let resolved_args: &[FfiTerm] = if num_args != 0 {
             if args.is_null() {
                 return MaybeTerm::Error(ErrorCode::NullPointer);
             }
@@ -2188,10 +2179,10 @@ impl Context {
             // Safety: We have checked that the pointer is not null and is aligned.
             // and it is the user's responsibility to ensure that `num_args` is at most the
             // length of the array.
-            resolved_args = unsafe { std::slice::from_raw_parts(args, num_args as usize) };
+            unsafe { std::slice::from_raw_parts(args, num_args as usize) }
         } else {
-            resolved_args = &[];
-        }
+            &[]
+        };
 
         get_context_mut!(@maybe_term, self, contexts, context);
 
@@ -2290,9 +2281,8 @@ impl Context {
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_begin_summary(self, name: FfiStr, num_args: u8) -> ErrorCode {
         get_context_mut!(@plain, self, contexts, context);
-        let name = match name.into_opt_string() {
-            Some(name) => name,
-            None => return ErrorCode::NullPointer,
+        let Some(name) = name.into_opt_string() else {
+            return ErrorCode::NullPointer;
         };
         context
             .constraint_helper
@@ -2334,9 +2324,8 @@ impl Context {
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_add_argument(self, name: FfiStr, ty: FfiAbcType) -> MaybeTerm {
         get_context_mut!(@maybe_term, self, contexts, context);
-        let name = match name.into_opt_string() {
-            Some(name) => name,
-            None => return MaybeTerm::Error(ErrorCode::NullPointer),
+        let Some(name) = name.into_opt_string() else {
+            return MaybeTerm::Error(ErrorCode::NullPointer);
         };
         context.add_argument_impl(name, ty).into()
     }
@@ -2388,7 +2377,7 @@ impl Context {
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_begin_predicate_block(self, condition: FfiTerm) -> ErrorCode {
         get_context_mut!(@plain, self, contexts, context);
-        context.begin_predicate_block_impl(condition).into()
+        context.begin_predicate_block_impl(condition)
     }
 
     /// End the active predicate block.
@@ -2418,14 +2407,14 @@ impl Context {
     /// - `op`: The operation of the constraint.
     /// - `rhs`: The right hand side of the constraint.
     /// - `id`: The identifier that the constraint system will use to refer to
-    /// the constraint. Results will reference this id.
+    ///   the constraint. Results will reference this id.
     ///
     ///
     /// # Errors
     /// - `TypeMismatch` if the type of `term` is different from the type of
-    /// `rhs` and `op` is `ConstraintOp::Assign`
+    ///   `rhs` and `op` is `ConstraintOp::Assign`
     /// - `MaxConstraintCountExceeded` if the maximum number of constraints has
-    /// been exceeded.
+    ///   been exceeded.
     #[unsafe(no_mangle)]
     pub extern "C" fn abc_add_constraint(
         self, lhs: FfiTerm, op: ConstraintOp, rhs: FfiTerm, id: u32,
@@ -2438,7 +2427,7 @@ impl Context {
     ///
     /// # Arguments
     /// - `retval`: The term that corresponds to the return value. If no value
-    /// is returned, this *must* be the `Empty` term.
+    ///     is returned, this *must* be the `Empty` term.
     ///
     /// # Errors
     /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
@@ -2480,9 +2469,9 @@ impl Context {
     ///
     /// ## Notes
     /// - The current predicate block is ignored, though the constraints *are*
-    /// added to the active summary (or global if no summary is active)
+    ///     added to the active summary (or global if no summary is active)
     /// - This is not meant to be used for loop variables.
-    /// Use `mark_loop_variable` for that.
+    ///     Use `mark_loop_variable` for that.
     ///
     /// # Arguments
     /// - `term`: The term to mark the range of.
@@ -2523,7 +2512,7 @@ impl Context {
 }
 
 impl ContextInner {
-    /// Implementation of the `mark_loop_variable` method for ContextInner.
+    /// Implementation of the `mark_loop_variable` method for `ContextInner`.
     fn mark_loop_variable_impl(
         &mut self, var: FfiTerm, init: FfiTerm, update_rhs: FfiTerm, update_op: BinaryOp,
     ) -> Result<(), ErrorCode> {
@@ -2546,9 +2535,8 @@ impl ContextInner {
     fn make_call_impl(
         &mut self, summary: FfiSummary, args: &[FfiTerm], return_dest: Option<FfiTerm>,
     ) -> Result<FfiTerm, ErrorCode> {
-        let summary = match self.summaries.get(summary.id) {
-            Some(Some(summary)) => summary,
-            _ => return Err(ErrorCode::InvalidSummary),
+        let Some(Some(summary)) = self.summaries.get(summary.id) else {
+            return Err(ErrorCode::InvalidSummary);
         };
 
         let mut resolved_args = Vec::with_capacity(args.len());

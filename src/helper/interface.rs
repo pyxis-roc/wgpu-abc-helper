@@ -515,7 +515,7 @@ impl ConstraintHelper {
                     }
                 }
 
-                return (*k, true);
+                (*k, true)
             })
             .collect()
     }

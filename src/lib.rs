@@ -66,11 +66,9 @@ pub use solvers::interval::{
 /// Objects that derive this trait mean they support replacing terms within them with other terms.
 trait SubstituteTerm {
     /// This should always return a clone of `to` if `self.is_identical(from)` is true.
-    #[must_use]
     fn substitute(&self, from: &Term, to: &Term) -> Self;
 
     /// Substitute multiple terms at once.
-    #[must_use]
     fn substitute_multi(&self, mapping: &[(&Term, &Term)]) -> Self;
 }
 
