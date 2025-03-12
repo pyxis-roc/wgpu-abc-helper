@@ -14,9 +14,7 @@ Predicates filter the possible domain that variables can hold for a statement.
 mod solver;
 pub(crate) mod translator;
 
-#[cfg(feature = "deserialize")]
 use serde::Deserialize;
-#[cfg(feature = "serialize")]
 use serde::Serialize;
 
 mod compound;
@@ -154,9 +152,7 @@ impl<T: IntervalBoundary> RangeBounds<T> for BasicInterval<T> {
     }
 }
 
-#[cfg_attr(feature = "serialize", derive(Serialize))]
-#[cfg_attr(feature = "deserialize", derive(Deserialize))]
-#[derive(Debug, thiserror::Error, Clone)]
+#[derive(Debug, thiserror::Error, Clone, Serialize, Deserialize)]
 pub enum IntervalError {
     #[error("Incompatible types")]
     IncompatibleTypes,
