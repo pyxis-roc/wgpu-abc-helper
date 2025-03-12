@@ -63,6 +63,8 @@ pub use solvers::interval::{
     translator::IntervalKind, BoolInterval, I32Interval, U32Interval, U64Interval,
 };
 
+use helper::AssumptionSerializer;
+
 /// Get the version of the abc package, as a string.
 #[allow(dead_code)]
 pub(crate) fn abc_version() -> String {
@@ -1521,6 +1523,7 @@ pub struct Summary {
     /// They mark things like assignment
     ///
     /// These encode information such as variable assignments.
+    #[serde(with = "AssumptionSerializer")]
     pub assumptions: FastHashMap<Term, Assumption>,
 }
 

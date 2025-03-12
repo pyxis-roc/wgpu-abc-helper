@@ -280,7 +280,7 @@ where
 /// Serialize an assumption map. This serializes them as a vector of pairs. Deserialization will work as expected.
 #[doc(hidden)]
 #[allow(non_snake_case)]
-mod AssumptionSerializer {
+pub(crate) mod AssumptionSerializer {
     use super::FastHashMap;
     use super::{Assumption, AssumptionOp, Term};
     use serde::Serialize;
@@ -295,7 +295,7 @@ mod AssumptionSerializer {
         pub(crate) assumption: Assumption,
     }
 
-    pub(super) fn serialize<S: serde::Serializer>(
+    pub(crate) fn serialize<S: serde::Serializer>(
         item: &FastHashMap<super::Term, super::Assumption>, serializer: S,
     ) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeSeq;
@@ -311,7 +311,7 @@ mod AssumptionSerializer {
     }
 
     #[allow(clippy::default_trait_access)]
-    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
+    pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> Result<FastHashMap<Term, Assumption>, D::Error> {
         let vec: Vec<TermAssumption> = Vec::deserialize(deserializer)?;
@@ -1394,6 +1394,8 @@ impl ConstraintInterface for ConstraintHelper {
 
 #[cfg(test)]
 pub(crate) mod test {
+    use std::num::NonZero;
+
     use super::*;
     use crate::{AbcScalar, Term};
     use rstest::{fixture, rstest};
