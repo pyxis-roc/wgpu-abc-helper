@@ -85,7 +85,6 @@ macro_rules! get_context_mut {
  ************************/
 
 // Global variables that are required for the ffi functions.
-
 lazy_static! {
     // This is a global collection of contexts that are created by the ffi API.
     // This indirection protects contexts from improper interference over the ffi boundary,
@@ -1841,7 +1840,7 @@ impl Context {
         // Unlock the types struct
         if size == 0 {
             return MaybeAbcType::Error(ErrorCode::ForbiddenZero);
-        };
+        }
 
         get_context_mut!(@maybe_type, self, contexts, context);
 
@@ -2427,7 +2426,7 @@ impl Context {
     ///
     /// # Arguments
     /// - `retval`: The term that corresponds to the return value. If no value
-    ///     is returned, this *must* be the `Empty` term.
+    ///  s returned, this *must* be the `Empty` term.
     ///
     /// # Errors
     /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
@@ -2469,9 +2468,9 @@ impl Context {
     ///
     /// ## Notes
     /// - The current predicate block is ignored, though the constraints *are*
-    ///     added to the active summary (or global if no summary is active)
+    ///  added to the active summary (or global if no summary is active)
     /// - This is not meant to be used for loop variables.
-    ///     Use `mark_loop_variable` for that.
+    ///  Use `mark_loop_variable` for that.
     ///
     /// # Arguments
     /// - `term`: The term to mark the range of.
@@ -2544,7 +2543,7 @@ impl ContextInner {
             match self.terms.get(arg.id) {
                 Some(Some(arg)) => resolved_args.push(arg.clone()),
                 _ => return Err(ErrorCode::InvalidTerm),
-            };
+            }
         }
 
         let return_dest = match return_dest {
