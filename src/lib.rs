@@ -63,6 +63,12 @@ pub use solvers::interval::{
     translator::IntervalKind, BoolInterval, I32Interval, U32Interval, U64Interval,
 };
 
+/// Get the version of the abc package, as a string.
+#[allow(dead_code)]
+pub(crate) fn abc_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 /// Objects that derive this trait mean they support replacing terms within them with other terms.
 trait SubstituteTerm {
     /// This should always return a clone of `to` if `self.is_identical(from)` is true.
