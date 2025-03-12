@@ -13,7 +13,6 @@ pub trait Union<Rhs = Self>: Interval {
     /// The new interval will contain all values in `self` and `rhs`.
     ///
     /// [`WrappedInterval::Compound`]: super::WrappedInterval::Compound
-    #[must_use]
     fn interval_union(&self, rhs: &Rhs) -> WrappedInterval<<Self as Interval>::Inner>;
 }
 
@@ -32,7 +31,6 @@ pub trait UnionAssign<Rhs = Self>: Interval {
 pub trait Intersect<Rhs = Self>: Interval {
     type Output: Interval<Inner = <Self as Interval>::Inner>;
     /// Return `self` intersected with `other`
-    #[must_use]
     fn interval_intersection(&self, rhs: &Rhs) -> Self::Output;
 }
 
@@ -47,14 +45,12 @@ pub trait IntersectAssign<Rhs = Self>: Interval {
 /// The addition operation for intervals.
 pub trait IntervalAdd<Rhs = Self>: Interval {
     type Output: Interval<Inner = <Self as Interval>::Inner>;
-    #[must_use]
     fn interval_add(&self, rhs: &Rhs) -> Self::Output;
 }
 
 /// The subtraction operator for intervals.
 pub trait IntervalSub<Rhs = Self>: Interval {
     type Output: Interval<Inner = <Self as Interval>::Inner>;
-    #[must_use]
     fn interval_sub(&self, rhs: &Rhs) -> Self::Output;
 }
 
@@ -64,26 +60,22 @@ where
     Rhs: Interval<Inner = <Self as Interval>::Inner>,
 {
     type Output: Interval<Inner = <Self as Interval>::Inner>;
-    #[must_use]
     fn interval_mul(&self, rhs: &Rhs) -> Self::Output;
 }
 
 /// The division operator for intervals.
 pub trait IntervalDiv<Rhs = Self>: Interval {
     type Output: Interval<Inner = <Self as Interval>::Inner>;
-    #[must_use]
     fn interval_div(&self, rhs: &Rhs) -> Self::Output;
 }
 
 pub trait IntervalMod<Rhs = Self>: Interval {
     type Output: Interval<Inner = <Self as Interval>::Inner>;
-    #[must_use]
     fn interval_mod(&self, rhs: &Rhs) -> Self::Output;
 }
 
 pub trait IntervalMin<Rhs = Self>: Interval {
     type Output: Interval<Inner = <Self as Interval>::Inner>;
-    #[must_use]
     fn interval_min(&self, rhs: &Rhs) -> Self::Output;
 }
 
@@ -936,7 +928,6 @@ impl<T: IntervalBoundary> IntersectAssign<BasicInterval<T>> for BasicInterval<T>
 /// Implementing this trait for types provides `a.interval_max(b) -> Output`.
 pub trait IntervalMax<Rhs = Self>: Interval {
     type Output: Interval<Inner = <Self as Interval>::Inner>;
-    #[must_use]
     fn interval_max(&self, rhs: &Rhs) -> Self::Output;
 }
 
@@ -946,7 +937,6 @@ where
     <Self as Interval>::Inner: num::traits::Signed,
 {
     type Output: Interval<Inner = <Self as Interval>::Inner>;
-    #[must_use]
     fn interval_neg(&self) -> Self::Output;
 }
 
