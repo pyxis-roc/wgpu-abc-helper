@@ -22,10 +22,7 @@ use std::collections::hash_map::Entry;
 use std::hint::unreachable_unchecked;
 use std::{array, default};
 
-#[cfg(feature = "deserialize")]
-use serde::Deserialize;
-#[cfg(feature = "serialize")]
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::ops::IntervalCast;
 use super::{
@@ -55,9 +52,7 @@ use resolver::Resolver;
 
 const I32_MAX_AS_I64: i64 = i32::MAX as i64;
 
-#[cfg_attr(feature = "serialize", derive(Serialize))]
-#[cfg_attr(feature = "deserialize", derive(Deserialize))]
-#[derive(Debug, thiserror::Error, Clone)]
+#[derive(Debug, thiserror::Error, Clone, Serialize, Deserialize)]
 pub enum SolverError {
     #[error("Invalid Summary")]
     InvalidSummary,

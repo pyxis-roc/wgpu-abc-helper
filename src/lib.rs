@@ -56,6 +56,7 @@ mod macros;
 use macros::cbindgen_annotate;
 
 pub mod solvers;
+use serde::{Deserialize, Serialize};
 pub use solvers::interval::SolverError;
 
 pub use solvers::interval::{
@@ -111,9 +112,7 @@ impl std::fmt::Display for ConstraintId {
 // For right now, everything will be a string... We will not do type checking.
 
 /// A variable. Used by terms to refer to a persistent, mutable value.
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Var {
     /// The name of the variable
     pub name: String,
@@ -133,83 +132,53 @@ impl std::fmt::Display for Var {
 }
 
 /// A unary operation. Currently only supports unary minus.
-#[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+#[derive(
+    strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
 #[cfg_attr(feature = "cffi", repr(C))]
 pub enum UnaryOp {
     #[strum(to_string = "-")]
     Minus,
 }
 
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
-#[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(
+    strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
 pub enum BinaryOp {
     #[strum(to_string = "+")]
-    #[cfg_attr(
-        any(feature = "serialize", feature = "deserialize"),
-        serde(rename = "+")
-    )]
+    #[serde(rename = "+")]
     Plus,
     #[strum(to_string = "-")]
-    #[cfg_attr(
-        any(feature = "serialize", feature = "deserialize"),
-        serde(rename = "-")
-    )]
+    #[serde(rename = "-")]
     Minus,
     #[strum(to_string = "*")]
-    #[cfg_attr(
-        any(feature = "serialize", feature = "deserialize"),
-        serde(rename = "*")
-    )]
+    #[serde(rename = "*")]
     Times,
     #[strum(to_string = "%")]
-    #[cfg_attr(
-        any(feature = "serialize", feature = "deserialize"),
-        serde(rename = "%")
-    )]
+    #[serde(rename = "%")]
     Mod,
     #[strum(to_string = "//")]
-    #[cfg_attr(
-        any(feature = "serialize", feature = "deserialize"),
-        serde(rename = "//")
-    )]
+    #[serde(rename = "//")]
     Div,
 
     // The following are probably not supported by our constraint system.
     #[strum(to_string = "&")]
-    #[cfg_attr(
-        any(feature = "serialize", feature = "deserialize"),
-        serde(rename = "&")
-    )]
+    #[serde(rename = "&")]
     BitAnd,
     #[strum(to_string = "|")]
-    #[cfg_attr(
-        any(feature = "serialize", feature = "deserialize"),
-        serde(rename = "|")
-    )]
+    #[serde(rename = "|")]
     BitOr,
     #[strum(to_string = "^")]
-    #[cfg_attr(
-        any(feature = "serialize", feature = "deserialize"),
-        serde(rename = "^")
-    )]
+    #[serde(rename = "^")]
     BitXor,
 
     // These can probably be supported if the lhs or rhs is a constant.
     #[strum(to_string = "<<")]
-    #[cfg_attr(
-        any(feature = "serialize", feature = "deserialize"),
-        serde(rename = "<<")
-    )]
+    #[serde(rename = "<<")]
     Shl,
     #[strum(to_string = ">>")]
-    #[cfg_attr(
-        any(feature = "serialize", feature = "deserialize"),
-        serde(rename = ">>")
-    )]
+    #[serde(rename = ">>")]
     Shr,
 }
 
@@ -234,27 +203,25 @@ impl BinaryOp {
 cbindgen_annotate! {
 "derive-const-casts"
 #[doc = "A comparison operator used by ccates."]
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
-#[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash, strum_macros::AsRefStr)]
+#[derive(strum_macros::Display, Debug, Clone, Copy, PartialEq, Eq, Hash, strum_macros::AsRefStr, Serialize, Deserialize)]
 pub enum CmpOp {
     #[strum(to_string = "==")]
-    #[cfg_attr(any(feature = "serialize", feature = "deserialize"), serde(rename = "=="))]
+    #[serde(rename = "==")]
     Eq = 0,
-    #[cfg_attr(any(feature = "serialize", feature = "deserialize"), serde(rename = "!="))]
+    #[serde(rename = "!=")]
     #[strum(to_string = "!=")]
     Neq,
     #[strum(to_string = "<")]
-    #[cfg_attr(any(feature = "serialize", feature = "deserialize"), serde(rename = "<"))]
+    #[serde(rename = "<")]
     Lt,
     #[strum(to_string = ">")]
-    #[cfg_attr(any(feature = "serialize", feature = "deserialize"), serde(rename = ">"))]
+    #[serde(rename = ">")]
     Gt,
     #[strum(to_string = "<=")]
-    #[cfg_attr(any(feature = "serialize", feature = "deserialize"), serde(rename = "<="))]
+    #[serde(rename = "<=")]
     Leq,
-    #[cfg_attr(any(feature = "serialize", feature = "deserialize"), serde(rename = ">="))]
+    #[serde(rename = ">=")]
     #[strum(to_string = ">=")]
     Geq,
 }
@@ -277,10 +244,17 @@ impl CmpOp {
 
 /// A constraint operation is any comparison operator OR an assignment.
 #[derive(
-    strum_macros::Display, Debug, Clone, Copy, Eq, PartialEq, Hash, strum_macros::AsRefStr,
+    strum_macros::Display,
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Hash,
+    strum_macros::AsRefStr,
+    Serialize,
+    Deserialize,
 )]
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
 pub enum AssumptionOp {
     #[strum(to_string = ":=")]
@@ -340,13 +314,8 @@ impl From<CmpOp> for ConstraintOp {
 
 /// Constraints are the building blocks of the constraint system.
 /// They establish relationships between terms that limit their domain.
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[cfg_attr(
-    any(feature = "serialize", feature = "deserialize"),
-    serde(tag = "kind")
-)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, strum_macros::EnumIs)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, strum_macros::EnumIs, Serialize, Deserialize)]
+#[serde(tag = "kind")]
 pub enum Constraint {
     /// A comparison constraint, e.g. length(x) < y
     Cmp {
@@ -357,10 +326,7 @@ pub enum Constraint {
     },
 
     /// An identity constraint, e.g. `x`.  In this case, `Term` _must_ be a predicate variant.
-    #[cfg_attr(
-        any(feature = "serialize", feature = "deserialize"),
-        serde(rename = "identity")
-    )]
+    #[serde(rename = "identity")]
     Identity {
         guard: Option<Handle<Predicate>>,
         term: Term,
@@ -381,13 +347,8 @@ impl std::fmt::Display for Constraint {
 }
 
 // An assumption `Inequality` is a special case of
-#[derive(strum_macros::EnumIs, Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[cfg_attr(
-    any(feature = "serialize", feature = "deserialize"),
-    serde(tag = "kind")
-)]
+#[derive(strum_macros::EnumIs, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind")]
 pub enum Assumption {
     /// An assignment assumption, e.g. x = y
     Assign {
@@ -588,8 +549,6 @@ impl Constraint {
 }
 
 cbindgen_annotate! {"ignore"
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(
     strum_macros::Display,
     Debug,
@@ -600,6 +559,8 @@ cbindgen_annotate! {"ignore"
     strum_macros::EnumIs,
     strum_macros::EnumTryAs,
     strum_macros::AsRefStr,
+    Serialize,
+    Deserialize
 )]
 pub enum Predicate {
     // Conjunction of two predicates, e.g. x && y
@@ -923,9 +884,7 @@ impl Predicate {
 }
 
 /// Enum for different expression kinds
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, strum_macros::EnumIs)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, strum_macros::EnumIs, Serialize, Deserialize)]
 pub enum AbcExpression {
     /// A Vector is a homogenous collection of terms.
     ///
@@ -1261,9 +1220,7 @@ impl std::fmt::Display for AbcExpression {
 }
 
 /// A struct field is a pair of a name and a type.
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StructField {
     name: String,
     ty: Handle<AbcType>,
@@ -1303,9 +1260,7 @@ where
 }
 
 /// Provides an interface to define a type in the constraint system.
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq, Hash, strum_macros::EnumIs)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, strum_macros::EnumIs, Serialize, Deserialize)]
 pub enum AbcType {
     // A user defined compound type.
     Struct {
@@ -1492,10 +1447,8 @@ impl std::fmt::Display for AbcType {
 /// bounds on them. E.g., an i32 is assumed to have bounds -2^31 to 2^31 - 1.
 ///
 /// Note that for Sint, Uint, and Float, the width is in **bytes**.
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[cfg_attr(feature = "cffi", repr(C))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AbcScalar {
     /// Signed integer type. The width is in bytes.
     Sint(u8),
@@ -1548,9 +1501,7 @@ impl std::fmt::Display for AbcScalar {
 }
 
 /// A summary is akin to a function reference.
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Summary {
     pub name: String,
     pub args: Vec<Term>,
@@ -1647,9 +1598,16 @@ lazy_static! {
 ///
 /// [`Predicate::True`]: crate::Predicate::True
 /// [`Predicate::False`]: crate::Predicate::False
-#[derive(Debug, Clone, Copy, PartialOrd, strum_macros::Display, strum_macros::EnumIs)]
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialOrd,
+    strum_macros::Display,
+    strum_macros::EnumIs,
+    Serialize,
+    Deserialize,
+)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[cfg_attr(feature = "cffi", repr(C))]
 pub enum Literal {
@@ -1808,8 +1766,6 @@ impl From<std::num::NonZeroI16> for Literal {
 /// It also simplifies the logic for storing references to variables.
 ///
 /// Note that cloning `Term` is quite cheap, as all of its members either store Arcs or are extremely small.
-#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
 #[derive(
     Clone,
     Debug,
@@ -1820,6 +1776,8 @@ impl From<std::num::NonZeroI16> for Literal {
     strum_macros::EnumIs,
     strum_macros::EnumTryAs,
     strum_macros::AsRefStr,
+    Serialize,
+    Deserialize,
 )]
 pub enum Term {
     #[strum(to_string = "{0}")]

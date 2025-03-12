@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abc-helper"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "arbitrary",
  "bitflags",
@@ -105,7 +105,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f68f53c83ab957f72c32642f3868eec03eb974d1fb82e453128456482613d36"
 dependencies = [
  "arbitrary",
- "serde",
 ]
 
 [[package]]
