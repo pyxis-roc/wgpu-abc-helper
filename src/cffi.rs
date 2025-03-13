@@ -106,7 +106,7 @@ pub enum ErrorCode {
     /// This occurs when a thread panics while holding a lock.
     PoisonedLock = 3,
 
-    /// Indicates a type that does not exist in the context.
+    /// Indicates a term that does not exist in the context.
     ///
     /// This means the term was either already deleted or never created.
     InvalidTerm = 4,
@@ -870,6 +870,26 @@ impl Context {
             }
             None => MaybeTerm::Error(ErrorCode::NullPointer),
         }
+    }
+
+    /// Mark a variable term as [uniform](https://www.w3.org/TR/WGSL/#address-spaces-uniform).
+    ///
+    /// Arguments:
+    /// - `var`: The variable term to mark as uniform. Must be a term previously declared as a variable via `abc_new_var`.
+    ///
+    /// Constraints that would be able to be eliminated in the case that
+    /// it knew the value of every uniform variable, and the sizes of all runtime-sized arrays,
+    /// will have their "No" answers replaced with "Maybe" answers.
+    ///
+    /// # Errors
+    /// - [`ErrorCode::PoisonedLock`] is returned if the lock on the global context is poisoned.
+    /// - [`ErrorCode::InvalidTerm`] is returned if the provided term does not exist in the context.
+    /// - [`ErrorCode::InvalidContext`] is returned if the provided context does not exist in the library's collection.
+    /// - [`ErrorCode::WrongType`] is returned if the term passed is not a variable term.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn abc_mark_uniform(self, var: FfiTerm) -> ErrorCode {
+        get_context_mut!(@plain, self, contexts, context);
+        context.mark_uniform_var_impl(var)
     }
 
     /// Create a new `cast` expression. This corresponds to the `as` operator in WGSL.
@@ -2517,6 +2537,19 @@ impl Context {
 }
 
 impl ContextInner {
+    /// Implementation of the `mark_uniform` method for `ContextInner`.
+    fn mark_uniform_var_impl(&mut self, term: FfiTerm) -> ErrorCode {
+        let Some(Some(term)) = self.terms.get(term.id) else {
+            return ErrorCode::InvalidTerm;
+        };
+        if !term.is_var() {
+            return ErrorCode::WrongType;
+        }
+        match self.constraint_helper.mark_uniform_var(term) {
+            Ok(()) => ErrorCode::Success,
+            Err(e) => e.into(),
+        }
+    }
     /// Implementation of the `mark_loop_variable` method for `ContextInner`.
     fn mark_loop_variable_impl(
         &mut self, var: FfiTerm, init: FfiTerm, update_rhs: FfiTerm, update_op: BinaryOp,
