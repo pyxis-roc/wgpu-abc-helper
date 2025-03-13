@@ -364,7 +364,7 @@ impl Context {
         };
 
         let new = Context { id };
-        contexts.push(Some(ContextInner {
+        let context = Some(ContextInner {
             terms: vec![Some(Term::Empty)],
             types: Vec::new(),
             summaries: Vec::new(),
@@ -372,7 +372,12 @@ impl Context {
             reusable_type_ids: Vec::new(),
             reusable_summary_ids: Vec::new(),
             constraint_helper: crate::helper::ConstraintHelper::default(),
-        }));
+        });
+        if id < contexts.len() {
+            contexts[id] = context;
+        } else {
+            contexts.push(context);
+        }
         MaybeContext::Success(new)
     }
     /// Free the context from the global context map.
