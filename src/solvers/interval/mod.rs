@@ -11,7 +11,6 @@ Given this, we identify the range that each value can hold for any constraint
 Predicates filter the possible domain that variables can hold for a statement.
 */
 #![allow(clippy::module_name_repetitions)]
-mod solver;
 pub(crate) mod translator;
 
 use serde::Deserialize;

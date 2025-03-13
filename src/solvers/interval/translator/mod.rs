@@ -31,7 +31,7 @@ use super::{
         IntervalGt, IntervalLe, IntervalLt, IntervalMax, IntervalMin, IntervalMod, IntervalMul,
         IntervalNe, IntervalNeg, IntervalShr, IntervalSub, Union, UnionAssign,
     },
-    solver, I64Interval, U64Interval, WrappedInterval,
+    I64Interval, U64Interval, WrappedInterval,
 };
 use super::{BoolInterval, I32Interval, Interval, IntervalError, U32Interval};
 
