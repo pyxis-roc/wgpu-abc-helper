@@ -43,12 +43,14 @@ provides a few mechanisms to handle loops.
 // Clippy lints
 #![allow(clippy::must_use_candidate, clippy::default_trait_access)]
 
-use std::{borrow::Borrow, fmt::Write, sync::Arc};
+use std::{
+    borrow::Borrow,
+    fmt::Write,
+    sync::{Arc, LazyLock},
+};
 
 type FastHashMap<K, V> = rustc_hash::FxHashMap<K, V>;
 type FastHashSet<K> = rustc_hash::FxHashSet<K>;
-
-use lazy_static::lazy_static;
 
 #[doc(hidden)]
 mod macros;
@@ -598,18 +600,14 @@ pub enum Predicate {
 impl Predicate {
     /// Get a handle to the true predicate.
     pub(crate) fn mk_true() -> Handle<Self> {
-        lazy_static! {
-            static ref TRUE: Handle<Predicate> = Predicate::True.into();
-        }
+        static TRUE: LazyLock<Handle<Predicate>> = LazyLock::new(|| Predicate::True.into());
         TRUE.clone()
     }
 
     #[allow(dead_code)] // This might be used in the future...
     /// Get a handle to the false predicate.
     pub(crate) fn mk_false() -> Handle<Self> {
-        lazy_static! {
-            static ref FALSE: Handle<Predicate> = Predicate::False.into();
-        }
+        static FALSE: LazyLock<Handle<Predicate>> = LazyLock::new(|| Predicate::False.into());
         FALSE.clone()
     }
 
@@ -643,7 +641,7 @@ impl Predicate {
                 iter_or_terms(b, &mut terms);
             }
             _ => (),
-        };
+        }
 
         terms
     }
@@ -678,7 +676,7 @@ impl Predicate {
                 iter_or_terms(b, &mut terms);
             }
             _ => (),
-        };
+        }
 
         terms
     }
@@ -1293,67 +1291,58 @@ pub enum AbcType {
     NoneType,
 }
 
+#[allow(non_upper_case_globals)]
 impl AbcType {
     /// Create a handle to a new `u32` type.
     pub fn mk_u32() -> Handle<AbcType> {
-        lazy_static! {
-            static ref AbcType_U32: Handle<AbcType> = Arc::new(AbcType::Scalar(AbcScalar::U32));
-        }
+        static AbcType_U32: LazyLock<Handle<AbcType>> =
+            LazyLock::new(|| Handle::new(AbcType::Scalar(AbcScalar::U32)));
         AbcType_U32.clone()
     }
 
     /// Create a handle to a new `i32` type.
     pub fn mk_i32() -> Handle<AbcType> {
-        lazy_static! {
-            static ref AbcType_I32: Handle<AbcType> = Arc::new(AbcType::Scalar(AbcScalar::I32));
-        }
+        static AbcType_I32: LazyLock<Handle<AbcType>> =
+            LazyLock::new(|| Arc::new(AbcType::Scalar(AbcScalar::I32)));
         AbcType_I32.clone()
     }
 
     /// Create a handle to a new `u64` type.
     pub fn mk_u64() -> Handle<AbcType> {
-        lazy_static! {
-            static ref AbcType_U64: Handle<AbcType> = Arc::new(AbcType::Scalar(AbcScalar::U64));
-        }
+        static AbcType_U64: LazyLock<Handle<AbcType>> =
+            LazyLock::new(|| Arc::new(AbcType::Scalar(AbcScalar::U64)));
         AbcType_U64.clone()
     }
 
     /// Create a handle to a new `i64` type.
     pub fn mk_i64() -> Handle<AbcType> {
-        lazy_static! {
-            static ref AbcType_I64: Handle<AbcType> = Arc::new(AbcType::Scalar(AbcScalar::I64));
-        }
+        static AbcType_I64: LazyLock<Handle<AbcType>> =
+            LazyLock::new(|| Arc::new(AbcType::Scalar(AbcScalar::I64)));
         AbcType_I64.clone()
     }
 
     /// Create a handle to a new `u16` type.
     pub fn mk_u16() -> Handle<AbcType> {
-        lazy_static! {
-            static ref AbcType_U16: Handle<AbcType> = Arc::new(AbcType::Scalar(AbcScalar::U16));
-        }
+        static AbcType_U16: LazyLock<Handle<AbcType>> =
+            LazyLock::new(|| Arc::new(AbcType::Scalar(AbcScalar::U16)));
         AbcType_U16.clone()
     }
 
     pub fn mk_i16() -> Handle<AbcType> {
-        lazy_static! {
-            static ref AbcType_I16: Handle<AbcType> = Arc::new(AbcType::Scalar(AbcScalar::I16));
-        }
+        static AbcType_I16: LazyLock<Handle<AbcType>> =
+            LazyLock::new(|| Arc::new(AbcType::Scalar(AbcScalar::I16)));
         AbcType_I16.clone()
     }
 
     pub fn mk_f32() -> Handle<AbcType> {
-        lazy_static! {
-            static ref AbcType_F32: Handle<AbcType> =
-                Arc::new(AbcType::Scalar(AbcScalar::Float(4)));
-        }
+        static AbcType_F32: LazyLock<Handle<AbcType>> =
+            LazyLock::new(|| Arc::new(AbcType::Scalar(AbcScalar::Float(4))));
         AbcType_F32.clone()
     }
 
     pub fn mk_f64() -> Handle<AbcType> {
-        lazy_static! {
-            static ref AbcType_F64: Handle<AbcType> =
-                Arc::new(AbcType::Scalar(AbcScalar::Float(8)));
-        }
+        static AbcType_F64: LazyLock<Handle<AbcType>> =
+            LazyLock::new(|| Arc::new(AbcType::Scalar(AbcScalar::Float(8))));
         AbcType_F64.clone()
     }
 
@@ -1592,13 +1581,13 @@ impl Summary {
     }
 }
 
-lazy_static! {
-    static ref RET: Term = Term::Var(Arc::new(Var {
-        name: "@ret".to_string()
-    }));
-    pub static ref NONETYPE: Arc<AbcType> = Arc::new(AbcType::NoneType);
-    pub static ref EMPTY_TERM: Term = Term::Empty;
-}
+static RET: std::sync::LazyLock<Term> = std::sync::LazyLock::new(|| {
+    Term::Var(Arc::new(Var {
+        name: "@ret".to_string(),
+    }))
+});
+static NONETYPE: std::sync::LazyLock<Handle<AbcType>> =
+    std::sync::LazyLock::new(|| Handle::new(AbcType::NoneType));
 
 /// A literal, ripped directly from naga's literal, with the `bool` literal dropped
 /// The bool literal turns into [`Predicate::True`] or [`Predicate::False`]
@@ -1876,7 +1865,6 @@ impl SubstituteTerm for Term {
     /// Creates a new term where all references to `self` have been replaced with `to`
     ///
     /// If `self` and `from` are identical, this method just returns `with`
-    #[must_use]
     fn substitute(&self, from: &Term, with: &Term) -> Self {
         if self == from {
             with.clone()

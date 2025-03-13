@@ -88,7 +88,7 @@ impl<T: IntervalBoundary> CompoundInterval<T> {
     /// Check if the union subsumes the provided unit interval.
     #[inline]
     pub fn subsumes_unit(&self, interval: &BasicInterval<T>) -> bool {
-        if interval.is_empty() {
+        if interval.is_empty_interval() {
             return true;
         }
         let mut iter = self.inner.iter();
@@ -145,7 +145,7 @@ impl<T: IntervalBoundary> CompoundInterval<T> {
     /// This is a O(n) operation, as `IntervalUnionVariant` aggressively keeps itself in simplified form.
     pub fn insert(&mut self, interval: BasicInterval<T>) -> bool {
         let mut interval = interval;
-        if interval.is_empty() {
+        if interval.is_empty_interval() {
             return false;
         }
         // Before we insert into the IntervalUnion, we need to check if the interval is subsumed or subsumes another interaval.
@@ -221,7 +221,6 @@ impl<T: IntervalBoundary> Interval for CompoundInterval<T> {
     }
 
     /// Get the lowest bound of the union.
-    #[must_use]
     #[inline]
     fn get_lower(&self) -> (T, bool) {
         match self.inner.first() {
@@ -231,7 +230,6 @@ impl<T: IntervalBoundary> Interval for CompoundInterval<T> {
     }
 
     /// Get the highest bound of the union.
-    #[must_use]
     #[inline]
     fn get_upper(&self) -> (T, bool) {
         match self.inner.last() {
@@ -241,7 +239,7 @@ impl<T: IntervalBoundary> Interval for CompoundInterval<T> {
     }
 
     fn has_value(&self, value: T) -> bool {
-        if self.is_empty() {
+        if self.is_empty_interval() {
             return false;
         }
         // Fast path: if we know the value is outside the bounds of the union...
@@ -256,9 +254,8 @@ impl<T: IntervalBoundary> Interval for CompoundInterval<T> {
     /// Check if the `CompoundInterval` is empty.
     ///
     /// A `CompoundInterval` is empty if and only if it contains no intervals.
-    #[must_use]
     #[inline]
-    fn is_empty(&self) -> bool {
+    fn is_empty_interval(&self) -> bool {
         self.inner.is_empty()
     }
 
@@ -271,11 +268,11 @@ impl<T: IntervalBoundary> Interval for CompoundInterval<T> {
     #[inline]
     fn subsumes(&self, other: &Self) -> bool {
         // fast path to check if empty...
-        if self.is_empty() {
+        if self.is_empty_interval() {
             return false;
         }
 
-        if self.is_top() || other.is_empty() {
+        if self.is_top() || other.is_empty_interval() {
             return true;
         }
 
@@ -367,7 +364,7 @@ impl<T: IntervalBoundary> Intersect<CompoundInterval<T>> for CompoundInterval<T>
 
 macro_rules! union_with_empty {
     ($interval:expr) => {
-        if $interval.is_empty() {
+        if $interval.is_empty_interval() {
             WrappedInterval::Empty
         } else if $interval.is_top() {
             WrappedInterval::top()
@@ -384,7 +381,7 @@ impl<T: IntervalBoundary> Union<WrappedInterval<T>> for CompoundInterval<T> {
     fn interval_union(&self, other: &WrappedInterval<T>) -> WrappedInterval<T> {
         match *other {
             WrappedInterval::Empty => union_with_empty!(self),
-            _ if other.is_empty() => union_with_empty!(self),
+            _ if other.is_empty_interval() => union_with_empty!(self),
             WrappedInterval::Top => WrappedInterval::Top,
             WrappedInterval::Basic(ref unit) => self.interval_union(unit),
             WrappedInterval::Compound(ref other) => self.interval_union(other),
@@ -398,8 +395,8 @@ impl<T: IntervalBoundary> Union<BasicInterval<T>> for CompoundInterval<T> {
         // if `other` is empty, then we do this:
         if other.is_top() {
             WrappedInterval::Top
-        } else if other.is_empty() {
-            if self.is_empty() {
+        } else if other.is_empty_interval() {
+            if self.is_empty_interval() {
                 WrappedInterval::Empty
             } else if self.is_top() {
                 WrappedInterval::top()
@@ -472,7 +469,7 @@ impl<T: IntervalBoundary> std::cmp::PartialEq<WrappedInterval<T>> for CompoundIn
     fn eq(&self, other: &WrappedInterval<T>) -> bool {
         match other {
             t if t.is_top() => self.is_top(),
-            t if t.is_empty() => self.is_empty(),
+            t if t.is_empty_interval() => self.is_empty_interval(),
             WrappedInterval::Compound(other) => self.inner == other.inner,
             WrappedInterval::Basic(unit) => self.inner.len() == 1 && self.inner.contains(unit),
             _ => unreachable!(),
@@ -484,7 +481,7 @@ impl<T: IntervalBoundary> std::cmp::PartialEq<BasicInterval<T>> for CompoundInte
     fn eq(&self, other: &BasicInterval<T>) -> bool {
         match other {
             t if t.is_top() => self.is_top(),
-            t if t.is_empty() => self.is_empty(),
+            t if t.is_empty_interval() => self.is_empty_interval(),
             _ => self.inner.len() == 1 && self.inner.contains(other),
         }
     }
@@ -495,7 +492,7 @@ macro_rules! interval_cmp_impl {
         impl<T: IntervalBoundary> $trait<BasicInterval<T>> for CompoundInterval<T> {
             type Output = WrappedInterval<T>;
             fn $trait_method(&self, rhs: &BasicInterval<T>) -> WrappedInterval<T> {
-                if self.is_empty() {
+                if self.is_empty_interval() {
                     WrappedInterval::Empty
                 } else {
                     let (low, high) =
@@ -513,7 +510,7 @@ macro_rules! interval_cmp_impl {
         impl<T: IntervalBoundary> $trait<CompoundInterval<T>> for CompoundInterval<T> {
             type Output = WrappedInterval<T>;
             fn $trait_method(&self, rhs: &CompoundInterval<T>) -> Self::Output {
-                if self.is_empty() {
+                if self.is_empty_interval() {
                     WrappedInterval::Empty
                 } else {
                     let (low, high) = self.iter().chain(rhs.iter()).fold(
@@ -573,7 +570,7 @@ impl<T: IntervalBoundary> IntervalMax<WrappedInterval<T>> for CompoundInterval<T
 
 impl<T: IntervalBoundary> From<CompoundInterval<T>> for WrappedInterval<T> {
     fn from(variant: CompoundInterval<T>) -> Self {
-        if variant.is_empty() {
+        if variant.is_empty_interval() {
             WrappedInterval::Empty
         } else if variant.is_top() {
             WrappedInterval::Top

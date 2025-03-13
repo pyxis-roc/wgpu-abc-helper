@@ -44,11 +44,11 @@ env_logger = "0.10.0"
 [lints.rust]
 # Add rust_analyzer as a valid cfg lint.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rust_analyzer)'] }
+non_upper_case_globals = { level = "allow", priority = 1}
 
 
 # We turn on clippy::pedantic
 [lints.clippy]
-doc = { level = "warn" }
 pedantic = { level = "warn" }
 must_use_candidate = { level = "allow", priority = 1 }
 default_trait_access = { level = "allow", priority = 1 }

@@ -465,11 +465,11 @@ impl IntervalKind {
     fn is_empty(&self) -> bool {
         match *self {
             IntervalKind::Top => false,
-            IntervalKind::U32(ref interval) => interval.is_empty(),
-            IntervalKind::I32(ref interval) => interval.is_empty(),
+            IntervalKind::U32(ref interval) => interval.is_empty_interval(),
+            IntervalKind::I32(ref interval) => interval.is_empty_interval(),
             IntervalKind::Bool(ref interval) => interval.is_empty(),
-            IntervalKind::I64(ref interval) => interval.is_empty(),
-            IntervalKind::U64(ref interval) => interval.is_empty(),
+            IntervalKind::I64(ref interval) => interval.is_empty_interval(),
+            IntervalKind::U64(ref interval) => interval.is_empty_interval(),
         }
     }
     /// Invokes the intervals' [`interval_union`] method on the provided intervals.
@@ -787,9 +787,9 @@ impl IntervalKind {
                 <U64Interval as IntervalLt>::interval_lt(interval_a, interval_b)
             }
             (IntervalKind::I32(interval_a), IntervalKind::U32(interval_b)) => {
-                if interval_a.is_empty() || interval_b.is_empty() {
+                if interval_a.is_empty_interval() || interval_b.is_empty_interval() {
                     return BoolInterval::Unknown;
-                };
+                }
                 let Ok(a_upper) = u32::try_from(interval_a.get_upper().0) else {
                     return BoolInterval::False;
                 };
@@ -1014,7 +1014,7 @@ fn ty_to_interval(
         }
 
         AbcType::Scalar(_) => unreachable!("AbcScalar has already been handled"),
-    };
+    }
 
     Ok(())
 }

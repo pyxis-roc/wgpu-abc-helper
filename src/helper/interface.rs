@@ -1088,7 +1088,7 @@ impl ConstraintInterface for ConstraintHelper {
             Some(pred) => {
                 self.return_predicate = Some(Predicate::new_or(pred.clone(), pred_ctx.clone()));
             }
-        };
+        }
 
         let Some(retval) = retval else {
             return if summary.return_type.is_none_type() {
@@ -1181,7 +1181,7 @@ impl ConstraintInterface for ConstraintHelper {
             self.module
                 .global_assumptions
                 .insert(lhs.clone(), assumption);
-        };
+        }
         Ok(())
     }
 
@@ -1272,7 +1272,7 @@ impl ConstraintInterface for ConstraintHelper {
                 .map_or(Some(p.clone()), move |perm| {
                     Predicate::new_and(perm, p).into()
                 });
-        };
+        }
 
         self.predicate_stack
             .pop()

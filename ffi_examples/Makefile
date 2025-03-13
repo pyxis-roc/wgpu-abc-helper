@@ -14,5 +14,9 @@ $(BUILD_DIR)/test.out: main.cpp
 	@mkdir -p $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
 
+$(BUILD_DIR)/test-serialize.out: test-serialize.cpp
+	@mkdir -p $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)
+
 clean:
 	rm -f $(BUILD_DIR)/test.out

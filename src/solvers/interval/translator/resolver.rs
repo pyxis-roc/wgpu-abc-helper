@@ -877,7 +877,7 @@ impl Resolver<'_> {
                         e => {
                             curr |= e;
                         }
-                    };
+                    }
                 }
                 Ok(curr)
             }
@@ -967,7 +967,7 @@ impl Resolver<'_> {
                         e => {
                             curr |= e;
                         }
-                    };
+                    }
                 }
                 Ok(curr)
             }

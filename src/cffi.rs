@@ -8,10 +8,9 @@
 
 use super::{AbcType, CmpOp, Term};
 use ffi_support::FfiStr;
-use lazy_static::lazy_static;
 use std::ffi::{c_char, CString};
 use std::num::NonZeroUsize;
-use std::sync::RwLock;
+use std::sync::{LazyLock, RwLock};
 
 #[allow(unused_imports)]
 use crate::cbindgen_annotate;
@@ -85,13 +84,15 @@ macro_rules! get_context_mut {
  ************************/
 
 // Global variables that are required for the ffi functions.
-lazy_static! {
-    // This is a global collection of contexts that are created by the ffi API.
-    // This indirection protects contexts from improper interference over the ffi boundary,
-    // as the actual ContextInner object is never exposed.
-    static ref FfiContexts: RwLock<Vec<Option<ContextInner>>> = Vec::new().into();
-    static ref ReusableContextIds: std::sync::Mutex<Vec<usize>> = Vec::new().into();
-}
+// This is a global collection of contexts that are created by the ffi API.
+// This indirection protects contexts from improper interference over the ffi boundary,
+// as the actual ContextInner object is never exposed.
+#[allow(non_upper_case_globals)]
+static FfiContexts: LazyLock<RwLock<Vec<Option<ContextInner>>>> =
+    LazyLock::new(|| RwLock::new(Vec::new()));
+#[allow(non_upper_case_globals)]
+static ReusableContextIds: LazyLock<std::sync::Mutex<Vec<usize>>> =
+    LazyLock::new(|| Vec::new().into());
 
 #[repr(C)]
 pub enum ErrorCode {
@@ -2426,7 +2427,7 @@ impl Context {
     ///
     /// # Arguments
     /// - `retval`: The term that corresponds to the return value. If no value
-    ///  s returned, this *must* be the `Empty` term.
+    ///   is returned, this *must* be the `Empty` term.
     ///
     /// # Errors
     /// - `ErrorCode::PoisonedLock` if the lock on the global contexts is poisoned.
@@ -2468,9 +2469,9 @@ impl Context {
     ///
     /// ## Notes
     /// - The current predicate block is ignored, though the constraints *are*
-    ///  added to the active summary (or global if no summary is active)
+    ///   added to the active summary (or global if no summary is active)
     /// - This is not meant to be used for loop variables.
-    ///  Use `mark_loop_variable` for that.
+    ///   Use `mark_loop_variable` for that.
     ///
     /// # Arguments
     /// - `term`: The term to mark the range of.

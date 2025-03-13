@@ -102,7 +102,7 @@ impl IntervalCast<WrappedInterval<u32>> for BasicInterval<i32> {
     /// Empty intervals are converted to empty
     #[allow(clippy::cast_sign_loss)] // Sign loss is intentional
     fn interval_cast(&self) -> WrappedInterval<u32> {
-        if self.is_empty() {
+        if self.is_empty_interval() {
             return WrappedInterval::Empty;
         }
 
@@ -132,7 +132,7 @@ impl IntervalCast<WrappedInterval<u32>> for BasicInterval<i32> {
 
             // Positive wraps...
             intervals.push(BasicInterval::from_literals(1, lower as u32));
-        };
+        }
         WrappedInterval::from_iter(intervals)
     }
 }
@@ -141,7 +141,7 @@ impl IntervalCast<WrappedInterval<i32>> for BasicInterval<u32> {
     /// Convert an interval from `u32` to `i32`, handling the wrapping semantics.
     #[allow(clippy::cast_possible_wrap)] // Wrapping is intentional
     fn interval_cast(&self) -> WrappedInterval<i32> {
-        if self.is_empty() {
+        if self.is_empty_interval() {
             return WrappedInterval::Empty;
         }
         if self.is_top() {
@@ -173,7 +173,7 @@ where
     BasicInterval<In>: IntervalCast<WrappedInterval<Out>>,
 {
     fn interval_cast(&self) -> WrappedInterval<Out> {
-        if self.is_empty() {
+        if self.is_empty_interval() {
             return WrappedInterval::Empty;
         }
         if self.is_top() {
@@ -219,7 +219,7 @@ impl<T: Interval> IntervalCast<T> for BoolInterval {
 impl<T: Interval> IntervalCast<BoolInterval> for T {
     /// Convert the interval to a `bool`. Zeros are mapped to `false`. Everything else maps to `true`.
     fn interval_cast(&self) -> BoolInterval {
-        if self.is_empty() {
+        if self.is_empty_interval() {
             return BoolInterval::Empty;
         }
         if self.has_value(num::zero()) {
@@ -335,7 +335,7 @@ macro_rules! signed_abs_impl {
                         }
                     }
                 );
-                if self.is_empty() {
+                if self.is_empty_interval() {
                     return WrappedInterval::EMPTY;
                 }
                 if self.lower >= 0 {
@@ -364,7 +364,7 @@ macro_rules! signed_abs_impl {
             #[inline(always)]
             fn interval_abs(&'a self) -> Self::Output {
                 use std::borrow::Cow::{Borrowed, Owned};
-                if self.is_empty() || self.get_lower().0 >= 0 {
+                if self.is_empty_interval() || self.get_lower().0 >= 0 {
                     return Borrowed(&self);
                 };
 
@@ -407,7 +407,7 @@ macro_rules! signed_abs_impl {
                 use std::borrow::Cow::{Borrowed, Owned};
                 match *self {
                     WrappedInterval::Top => Owned(WrappedInterval::new_concrete(0, <$ty>::MAX)),
-                    ref any if any.is_empty() => Borrowed(&WrappedInterval::EMPTY),
+                    ref any if any.is_empty_interval() => Borrowed(&WrappedInterval::EMPTY),
                     ref any if any.get_lower().0 >= 0 => Borrowed(any),
                     WrappedInterval::Basic(interval) => Owned(interval.interval_abs()),
                     WrappedInterval::Compound(ref interval) => {
@@ -431,7 +431,7 @@ macro_rules! interval_arith_impl {
         impl<T: IntervalBoundary> $trait for BasicInterval<T> {
             type Output = WrappedInterval<T>;
             fn $trait_fn(&self, rhs: &Self) -> Self::Output {
-                if self.is_empty() || rhs.is_empty() {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
                     WrappedInterval::Empty
                 } else if self.is_top() || rhs.is_top() {
                     WrappedInterval::Top
@@ -561,7 +561,7 @@ noncommutative_op_impl!(T, IntervalSub, interval_sub);
 impl<T: IntervalBoundary + num::Signed> IntervalNeg for BasicInterval<T> {
     type Output = WrappedInterval<T>;
     fn interval_neg(&self) -> WrappedInterval<T> {
-        if self.is_empty() {
+        if self.is_empty_interval() {
             WrappedInterval::Empty
         } else if self.is_top() {
             WrappedInterval::Top
@@ -581,7 +581,7 @@ impl<T: IntervalBoundary + num::Signed> IntervalNeg for BasicInterval<T> {
 impl<T: IntervalBoundary> IntervalMax<BasicInterval<T>> for BasicInterval<T> {
     type Output = WrappedInterval<T>;
     fn interval_max(&self, rhs: &BasicInterval<T>) -> Self::Output {
-        if self.is_empty() || rhs.is_empty() {
+        if self.is_empty_interval() || rhs.is_empty_interval() {
             return WrappedInterval::Empty;
         }
         if self.is_top() {
@@ -600,7 +600,7 @@ impl<T: IntervalBoundary> IntervalMax<BasicInterval<T>> for BasicInterval<T> {
 impl<T: IntervalBoundary> IntervalMin<BasicInterval<T>> for BasicInterval<T> {
     type Output = WrappedInterval<T>;
     fn interval_min(&self, rhs: &BasicInterval<T>) -> Self::Output {
-        if self.is_empty() || rhs.is_empty() {
+        if self.is_empty_interval() || rhs.is_empty_interval() {
             return WrappedInterval::Empty;
         }
         if self.is_top() {
@@ -649,7 +649,7 @@ macro_rules! unsigned_mul_impl {
                 let max: $format = num::Bounded::max_value();
                 let zero: $format = num::Zero::zero();
                 let one: $intermediate = num::One::one();
-                if self.is_empty() || rhs.is_empty() {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
                     return WrappedInterval::Empty;
                 }
                 if self.is_top() || rhs.is_top() {
@@ -725,7 +725,7 @@ macro_rules! signed_mul_impl {
             let zero: $format = ConstZero::ZERO;
             let one: $format = ConstOne::ONE;
             let one_wide: $intermediate = ConstOne::ONE;
-            if self.is_empty() || rhs.is_empty() {
+            if self.is_empty_interval() || rhs.is_empty_interval() {
                 return WrappedInterval::Empty;
             }
             if self.is_top() || rhs.is_top() {
@@ -829,15 +829,16 @@ signed_mul_impl!(i64, i128, 64u8);
 
 impl<T: IntervalBoundary> Union<BasicInterval<T>> for BasicInterval<T> {
     /// Return a new `WrappedInterval` that is the union of self and other
-    #[must_use]
     #[allow(clippy::similar_names)] // subsumer and subsumed are fine.
     fn interval_union(&self, other: &Self) -> WrappedInterval<T> {
         match (self, other) {
             (a, b) if a.is_top() || b.is_top() => WrappedInterval::Top,
-            (a, b) if a.is_empty() && b.is_empty() => WrappedInterval::Empty,
+            (a, b) if a.is_empty_interval() && b.is_empty_interval() => WrappedInterval::Empty,
             (a, b) if a == b => WrappedInterval::Basic(*a),
             // If just one is empty, then Unit of other
-            (empty, other) | (other, empty) if empty.is_empty() => WrappedInterval::Basic(*other),
+            (empty, other) | (other, empty) if empty.is_empty_interval() => {
+                WrappedInterval::Basic(*other)
+            }
             (subsumer, subsumed) | (subsumed, subsumer) if subsumer.subsumes(subsumed) => {
                 WrappedInterval::Basic(*subsumer)
             }
@@ -891,7 +892,7 @@ impl<T: IntervalBoundary> Union<WrappedInterval<T>> for WrappedInterval<T> {
     fn interval_union(&self, other: &Self) -> WrappedInterval<T> {
         match (self, other) {
             // This covers (Empty, Empty)
-            (other, empty) | (empty, other) if empty.is_empty() => other.clone(),
+            (other, empty) | (empty, other) if empty.is_empty_interval() => other.clone(),
             // This covers (_, Top) and (Top, _)
             (_, top) | (top, _) if top.is_top() => WrappedInterval::Top,
 
@@ -909,7 +910,6 @@ impl<T: IntervalBoundary> Union<WrappedInterval<T>> for WrappedInterval<T> {
 impl<T: IntervalBoundary> Intersect<BasicInterval<T>> for BasicInterval<T> {
     type Output = BasicInterval<T>;
     /// Return a new interval that is the intersection of this interval and `other`.
-    #[must_use]
     fn interval_intersection(&self, other: &Self) -> Self::Output {
         Self {
             lower: std::cmp::max(self.lower, other.lower),
@@ -972,11 +972,11 @@ where
 {
     /// Return whether the two intervals are always equal.
     fn interval_eq(&self, rhs: &Rhs) -> BoolInterval {
-        if self.is_empty() || rhs.is_empty() {
+        if self.is_empty_interval() || rhs.is_empty_interval() {
             BoolInterval::Empty
         } else if let (Some(lhs), Some(rhs)) = (self.as_literal(), rhs.as_literal()) {
             BoolInterval::from(lhs == rhs)
-        } else if self.interval_intersection(rhs).is_empty() {
+        } else if self.interval_intersection(rhs).is_empty_interval() {
             BoolInterval::False
         } else {
             BoolInterval::Unknown
@@ -995,11 +995,11 @@ where
 {
     /// Return whether the two intervals are always not equal.
     fn interval_ne(&self, rhs: &Rhs) -> BoolInterval {
-        if self.is_empty() || rhs.is_empty() {
+        if self.is_empty_interval() || rhs.is_empty_interval() {
             BoolInterval::Empty
         } else if let (Some(lhs), Some(rhs)) = (self.as_literal(), rhs.as_literal()) {
             BoolInterval::from(lhs == rhs)
-        } else if self.interval_intersection(rhs).is_empty() {
+        } else if self.interval_intersection(rhs).is_empty_interval() {
             BoolInterval::False
         } else {
             BoolInterval::Unknown
@@ -1078,7 +1078,7 @@ macro_rules! signed_unsigned_cmp_impl {
     ($self_ty:ty) => {
         impl IntervalGt<WrappedInterval<u32>> for WrappedInterval<$self_ty> {
             fn interval_gt(&self, rhs: &WrappedInterval<u32>) -> BoolInterval {
-                if self.is_empty() || rhs.is_empty() {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
                     return BoolInterval::Empty;
                 }
                 let Ok(lower_a) = u32::try_from(self.get_lower().0) else {
@@ -1093,7 +1093,7 @@ macro_rules! signed_unsigned_cmp_impl {
 
         impl IntervalLt<WrappedInterval<u32>> for WrappedInterval<$self_ty> {
             fn interval_lt(&self, rhs: &WrappedInterval<u32>) -> BoolInterval {
-                if self.is_empty() || rhs.is_empty() {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
                     return BoolInterval::Empty;
                 }
                 let Ok(upper_a) = u32::try_from(self.get_upper().0) else {
@@ -1108,7 +1108,7 @@ macro_rules! signed_unsigned_cmp_impl {
 
         impl IntervalLe<WrappedInterval<u32>> for WrappedInterval<$self_ty> {
             fn interval_le(&self, rhs: &WrappedInterval<u32>) -> BoolInterval {
-                if self.is_empty() || rhs.is_empty() {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
                     return BoolInterval::Empty;
                 }
                 let Ok(upper_a) = u32::try_from(self.get_upper().0) else {
@@ -1176,7 +1176,7 @@ macro_rules! unsigned_div_impl {
             type Output = WrappedInterval<<Self as Interval>::Inner>;
             fn interval_div(&self, rhs: &Self) -> Self::Output {
                 // If either is empty, then return empty.
-                if self.is_empty() || rhs.is_empty() {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
                     return WrappedInterval::EMPTY;
                 }
 
@@ -1242,7 +1242,7 @@ macro_rules! unsigned_mod_impl {
             type Output = WrappedInterval<$format>;
             fn interval_mod(&self, rhs: &Self) -> Self::Output {
                 // If either is empty, then return empty.
-                if self.is_empty() || rhs.is_empty() {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
                     return WrappedInterval::EMPTY;
                 }
                 if rhs.is_top() {
@@ -1277,7 +1277,7 @@ macro_rules! signed_mod_impl {
         impl IntervalMod for $kind {
             type Output = WrappedInterval<$format>;
             fn interval_mod(&self, rhs: &Self) -> Self::Output {
-                if self.is_empty() || rhs.is_empty() {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
                     return WrappedInterval::EMPTY;
                 }
                 if rhs.is_top() {
@@ -1431,7 +1431,7 @@ macro_rules! signed_div_impl {
             type Output = WrappedInterval<<Self as Interval>::Inner>;
             fn interval_div(&self, rhs: &Self) -> Self::Output {
                 // If either is empty, then return empty.
-                if self.is_empty() || rhs.is_empty() {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
                     return WrappedInterval::EMPTY;
                 }
                 // Fast path division when both are literals.
@@ -1552,7 +1552,7 @@ macro_rules! interval_trait_impl {
         impl<T: IntervalBoundary> $trait for CompoundInterval<T> {
             type Output = $output;
             fn $method(&self, rhs: &CompoundInterval<T>) -> Self::Output {
-                if self.is_empty() || rhs.is_empty() {
+                if self.is_empty_interval() || rhs.is_empty_interval() {
                     return Self::Output::Empty
                 }
                 if rhs.is_top() || self.is_top() {
@@ -1587,7 +1587,7 @@ macro_rules! interval_trait_impl {
         impl<T: IntervalBoundary> $trait<BasicInterval<T>> for CompoundInterval<T> {
             type Output = $output;
             fn $method(&self, rhs: &BasicInterval<T>) -> Self::Output {
-                if rhs.is_empty() || self.is_empty() {
+                if rhs.is_empty_interval() || self.is_empty_interval() {
                     return WrappedInterval::Empty;
                 }
                 if rhs.is_top() || self.is_top() {
@@ -1648,7 +1648,7 @@ macro_rules! non_commutative_trait_impl {
         {
             type Output = WrappedInterval<T>;
             fn $trait_fn(&self, rhs: &CompoundInterval<T>) -> Self::Output {
-                if rhs.is_empty() {
+                if rhs.is_empty_interval() {
                     return WrappedInterval::Empty;
                 }
                 if rhs.is_top() {

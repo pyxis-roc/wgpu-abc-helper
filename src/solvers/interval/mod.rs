@@ -102,7 +102,7 @@ impl crate::Literal {
 pub trait Interval {
     type Inner: IntervalBoundary;
     /// Return whether the interval contains any values.
-    fn is_empty(&self) -> bool;
+    fn is_empty_interval(&self) -> bool;
     /// If this interval is unit over a single value, return `Some(value)`.  Otherwise, returns `None`
     fn as_literal(&self) -> Option<Self::Inner>;
 
@@ -191,7 +191,7 @@ impl<T: IntervalBoundary> BasicInterval<T> {
 impl<T: IntervalBoundary> std::hash::Hash for BasicInterval<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // if this is empty, we write it as a 0.
-        if self.is_empty() {
+        if self.is_empty_interval() {
             return 0u8.hash(state);
         }
         self.lower.hash(state);
@@ -213,8 +213,8 @@ impl<T: IntervalBoundary> std::cmp::PartialEq for BasicInterval<T> {
     /// assert_eq!(a, b);
     /// ```
     fn eq(&self, other: &Self) -> bool {
-        if self.is_empty() && other.is_empty() {
-            other.is_empty()
+        if self.is_empty_interval() && other.is_empty_interval() {
+            other.is_empty_interval()
         } else {
             self.lower == other.lower && self.upper == other.upper
         }
@@ -238,8 +238,8 @@ impl<T: IntervalBoundary> Ord for BasicInterval<T> {
     /// - Otherwise, `empty` always compares less than other.
     #[inline]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        if self.is_empty() {
-            if other.is_empty() {
+        if self.is_empty_interval() {
+            if other.is_empty_interval() {
                 std::cmp::Ordering::Equal
             } else {
                 std::cmp::Ordering::Less
@@ -260,7 +260,6 @@ impl<T: IntervalBoundary> PartialOrd for BasicInterval<T> {
     /// - If both intervals are empty, they compare equal.
     /// - Otherwise, `empty` always compares less than other.
     #[inline]
-    #[must_use]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -269,7 +268,7 @@ impl<T: IntervalBoundary> PartialOrd for BasicInterval<T> {
 impl<T: IntervalBoundary> PartialOrd<T> for BasicInterval<T> {
     fn partial_cmp(&self, other: &T) -> Option<std::cmp::Ordering> {
         use std::cmp::Ordering;
-        if self.is_empty() {
+        if self.is_empty_interval() {
             Some(std::cmp::Ordering::Less)
         } else if self.upper.lt(other) {
             Some(Ordering::Less)
@@ -285,7 +284,7 @@ impl<T: IntervalBoundary> PartialOrd<T> for BasicInterval<T> {
 
 impl<T: IntervalBoundary + std::fmt::Display> std::fmt::Display for BasicInterval<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_empty() {
+        if self.is_empty_interval() {
             write!(f, "[]")
         } else {
             write!(f, "[{} : {}]", self.lower, self.upper)
@@ -401,9 +400,9 @@ impl<T: IntervalBoundary> Interval for BasicInterval<T> {
     /// Return whether the provided interval is contained entirely within `self`
     #[inline]
     fn subsumes(&self, other: &Self) -> bool {
-        if self.is_empty() {
-            return other.is_empty();
-        } else if other.is_empty() {
+        if self.is_empty_interval() {
+            return other.is_empty_interval();
+        } else if other.is_empty_interval() {
             return true;
         }
         self.lower <= other.lower && self.upper >= other.upper
@@ -414,7 +413,7 @@ impl<T: IntervalBoundary> Interval for BasicInterval<T> {
     /// If the interval is empty, then the lower bound is meaningless. In this case, the second value will be `true`.
     #[inline]
     fn get_lower(&self) -> (T, bool) {
-        (self.lower, self.is_empty())
+        (self.lower, self.is_empty_interval())
     }
 
     /// Return the upper bound of the interval.
@@ -422,14 +421,14 @@ impl<T: IntervalBoundary> Interval for BasicInterval<T> {
     /// If the interval is empty, then the upper bound is meaningless. In this case, the second value will be `true`.
     #[inline]
     fn get_upper(&self) -> (T, bool) {
-        (self.upper, self.is_empty())
+        (self.upper, self.is_empty_interval())
     }
 
     /// Return whether the interval is empty.
     ///
     /// An interval is empty if the lower bound is greater than the upper bound.
     #[inline]
-    fn is_empty(&self) -> bool {
+    fn is_empty_interval(&self) -> bool {
         self.lower > self.upper
     }
 }
@@ -462,7 +461,7 @@ impl<A: IntervalBoundary> FromIterator<BasicInterval<A>> for WrappedInterval<A> 
         let compound = CompoundInterval::from_iter(iter);
         if compound.is_top() {
             Self::TOP
-        } else if compound.is_empty() {
+        } else if compound.is_empty_interval() {
             Self::EMPTY
         } else if compound.len() == 1 {
             Self::Basic(*compound.iter().next().unwrap())
@@ -505,8 +504,8 @@ impl<T: IntervalBoundary> std::cmp::PartialEq<WrappedInterval<T>> for BasicInter
     /// [`BasicInterval`]: self::BasicInterval
     /// [`WrappedInterval`]: self::WrappedInterval
     fn eq(&self, other: &WrappedInterval<T>) -> bool {
-        if self.is_empty() {
-            other.is_empty()
+        if self.is_empty_interval() {
+            other.is_empty_interval()
         } else if self.is_top() {
             other.is_top()
         } else {
@@ -529,7 +528,7 @@ impl<T: IntervalBoundary> std::cmp::PartialEq for WrappedInterval<T> {
     /// That is, even if `self` and `other` are different variants, they may still compare equal.
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Empty, other) => other.is_empty(),
+            (Self::Empty, other) => other.is_empty_interval(),
             (Self::Top, other) => other.is_top(),
             (Self::Basic(a), b) | (b, Self::Basic(a)) => a == b,
             (Self::Compound(a), b) => a == b,
@@ -543,7 +542,7 @@ impl<T: IntervalBoundary> IntersectAssign for WrappedInterval<T> {
             // Do nothing if a is empty, b is top, or a == b.
             (a, b) if b.is_top() || a == b || matches!(a, Self::Empty) => (),
             // If b is empty, then intersection is empty.
-            (a, b) if b.is_empty() => {
+            (a, b) if b.is_empty_interval() => {
                 *a = Self::Empty;
             }
             // If a is top, then its itersection becomes b.
@@ -557,7 +556,7 @@ impl<T: IntervalBoundary> IntersectAssign for WrappedInterval<T> {
                 };
                 interval.interval_intersect(other_interval);
                 // If their intersection was empty, then we prefer to set this to WrappedInterval::Empty.
-                if interval.is_empty() {
+                if interval.is_empty_interval() {
                     *a = Self::Empty;
                 }
             }
@@ -609,7 +608,6 @@ impl<T: IntervalBoundary> Intersect for WrappedInterval<T> {
     type Output = Self;
 
     // Same code as above, just returns a new value instead of modifying in place.
-    #[must_use]
     fn interval_intersection(&self, other: &Self) -> Self {
         macro_rules! match_len {
             ($a: expr, $new:expr) => {
@@ -622,13 +620,13 @@ impl<T: IntervalBoundary> Intersect for WrappedInterval<T> {
         }
         match (self, other) {
             (a, b) if b.is_top() || a == b || matches!(*a, Self::Empty) => a.clone(),
-            (_, b) if b.is_empty() => Self::Empty,
+            (_, b) if b.is_empty_interval() => Self::Empty,
             (a, b) if a.is_top() => b.clone(),
             // If both a and b are unit, then we just intersect them.
             (WrappedInterval::Basic(interval), Self::Basic(other_interval)) => {
                 let new = interval.interval_intersection(other_interval);
                 // If their intersection was empty, then we prefer to set this to WrappedInterval::Empty.
-                if new.is_empty() {
+                if new.is_empty_interval() {
                     Self::Empty
                 } else {
                     Self::Basic(new)
@@ -712,7 +710,7 @@ impl<T: IntervalBoundary> Interval for WrappedInterval<T> {
     ///
     /// If `self` is an empty interval, return (`T::zero()`, `true`).
     fn get_lower(&self) -> (T, bool) {
-        if self.is_empty() {
+        if self.is_empty_interval() {
             return (T::zero(), true);
         }
         match *self {
@@ -729,7 +727,7 @@ impl<T: IntervalBoundary> Interval for WrappedInterval<T> {
     }
 
     fn get_upper(&self) -> (T, bool) {
-        if self.is_empty() {
+        if self.is_empty_interval() {
             return (T::zero(), true);
         }
         match *self {
@@ -745,11 +743,11 @@ impl<T: IntervalBoundary> Interval for WrappedInterval<T> {
         }
     }
 
-    fn is_empty(&self) -> bool {
+    fn is_empty_interval(&self) -> bool {
         match *self {
             Self::Top => false,
-            Self::Basic(ref t) => t.is_empty(),
-            Self::Compound(ref this) => this.is_empty(),
+            Self::Basic(ref t) => t.is_empty_interval(),
+            Self::Compound(ref this) => this.is_empty_interval(),
             Self::Empty => true,
         }
     }
@@ -791,7 +789,7 @@ impl<T: IntervalBoundary + std::fmt::Display> WrappedInterval<T> {
 
 impl<T: IntervalBoundary> From<BasicInterval<T>> for WrappedInterval<T> {
     fn from(unit: BasicInterval<T>) -> Self {
-        if unit.is_empty() {
+        if unit.is_empty_interval() {
             Self::EMPTY
         } else if unit.is_top() {
             Self::TOP
@@ -803,7 +801,7 @@ impl<T: IntervalBoundary> From<BasicInterval<T>> for WrappedInterval<T> {
 
 impl<T: IntervalBoundary> From<&BasicInterval<T>> for WrappedInterval<T> {
     fn from(unit: &BasicInterval<T>) -> Self {
-        if unit.is_empty() {
+        if unit.is_empty_interval() {
             WrappedInterval::Empty
         } else if unit.is_top() {
             WrappedInterval::Top
