@@ -7,13 +7,13 @@ SPDX-FileCopyrightText = "2024-2025 University of Rochester"
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
-path = ["src/**/*.rs", "Cargo.toml", "Cargo.lock", ".pre-commit-config.yaml", "**/REUSE.toml", "*.yaml", "tests/**/*.rs", "examples/**/*.rs"]
+path = ["src/**/*.rs", "Cargo.toml", ".pre-commit-config.yaml", "**/REUSE.toml", "*.yaml", "tests/**/*.rs", "examples/**/*.rs"]
 SPDX-FileCopyrightText = "2024-2025 University of Rochester"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
 
-# rust-toolchain.toml has no copyright, and is licensed under CC0-1.0
+# The following have no copyright and are licensed under CC0-1.0
 [[annotations]]
-path = ["rust-toolchain.toml", ".rustfmt.toml"]
+path = ["rust-toolchain.toml", ".rustfmt.toml", "Cargo.lock"]
 SPDX-License-Identifier = "CC0-1.0"
 SPDX-FileCopyrightText = "None"

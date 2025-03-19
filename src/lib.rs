@@ -1078,7 +1078,7 @@ impl AbcExpression {
 impl Term {
     /// Return whether the term is comprised entirely of literals, array length terms, and terms appearing in the "uniforms" set.
     fn only_uniforms(&self, uniforms: &FastHashSet<Term>) -> bool {
-        if self.is_literal() || self.is_array_length_like() || uniforms.contains(self) {
+        if self.is_array_length_like() || uniforms.contains(self) {
             return true;
         }
         if let Self::Expr(e) = self {
@@ -1086,6 +1086,9 @@ impl Term {
         }
         if let Self::Predicate(p) = self {
             return p.only_uniforms(uniforms);
+        }
+        if let Self::Literal(l) = self {
+            return l.is_u_32() || l.is_i_32() || l.is_i_64() || l.is_u_64();
         }
 
         false

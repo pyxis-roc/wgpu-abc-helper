@@ -20,7 +20,8 @@ namespace abc_helper
     struct MaybeSummary;
     struct FfiSummary;
     struct MaybeSolution;
+    struct ConstraintResult;
     struct ConstraintOp;
+    enum class SolverResult;
     enum class AssumptionOp;
-    
 }

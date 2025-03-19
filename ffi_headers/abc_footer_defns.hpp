@@ -1068,4 +1068,13 @@ namespace abc_helper
     FfiTerm Context::get_empty_term() {
         return abc_get_empty_term();
     }
+
+    inline std::ostream& operator<<(std::ostream& os, SolverResult result) {
+        switch (result) {
+          case SolverResult::Yes: os << "Yes"; break;
+          case SolverResult::Maybe: os << "Maybe"; break;
+          case SolverResult::No: os << "No"; break;
+        }
+        return os;
+      }
 }
