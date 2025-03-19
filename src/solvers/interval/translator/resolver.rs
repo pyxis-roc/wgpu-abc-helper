@@ -1,6 +1,7 @@
 use crate::{
-    AbcExpression, AbcScalar, AbcType, Assumption, BinaryOp, CmpOp, FastHashMap, FastHashSet,
-    Handle, Literal, Predicate, StructField, Term,
+    solvers::interval::SolverResult, AbcExpression, AbcScalar, AbcType, Assumption, BinaryOp,
+    CmpOp, ConstraintModule, FastHashMap, FastHashSet, Handle, Literal, Predicate, StructField,
+    Term,
 };
 use std::borrow::Cow;
 
@@ -146,6 +147,7 @@ pub(super) struct Resolver<'a> {
     /// The map of terms for the resolver
     pub term_map: Cow<'a, FastHashMap<Term, IntervalKind>>,
     pub predicate_map: Cow<'a, FastHashMap<Predicate, BoolInterval>>,
+    uniform_map: Cow<'a, FastHashSet<Term>>,
     /// Flag determining whether the interval for expressions should be recomputed.
     recompute: bool,
     type_map: &'a FastHashMap<Term, Handle<AbcType>>,
@@ -156,12 +158,14 @@ impl Clone for Resolver<'_> {
         self.term_map.clone_from(&source.term_map);
         self.predicate_map.clone_from(&source.predicate_map);
         self.type_map.clone_from(&source.type_map);
+        self.uniform_map.clone_from(&source.uniform_map);
         self.recompute = source.recompute;
     }
     fn clone(&self) -> Self {
         Self {
             term_map: self.term_map.clone(),
             predicate_map: self.predicate_map.clone(),
+            uniform_map: self.uniform_map.clone(),
             recompute: self.recompute,
             type_map: self.type_map,
         }
@@ -180,6 +184,9 @@ impl Resolver<'_> {
         }
 
         let terms = self.term_map.to_mut();
+        self.uniform_map
+            .to_mut()
+            .extend(other.uniform_map.iter().cloned());
 
         for (term, interval) in other.term_map.iter() {
             match self.term_map.to_mut().entry(term.clone()) {
@@ -225,13 +232,14 @@ impl<'a> Resolver<'a> {
     pub fn new(
         term_map: Cow<'a, FastHashMap<Term, IntervalKind>>,
         predicate_map: Cow<'a, FastHashMap<Predicate, BoolInterval>>,
-        type_map: &'a FastHashMap<Term, Handle<AbcType>>,
+        type_map: &'a FastHashMap<Term, Handle<AbcType>>, uniform_map: Cow<'a, FastHashSet<Term>>,
     ) -> Self {
         Self {
             term_map,
             predicate_map,
             recompute: true,
             type_map,
+            uniform_map,
         }
     }
 }
@@ -804,12 +812,11 @@ impl<'resolver> Resolver<'resolver> {
         res
     }
 }
-
 impl Resolver<'_> {
     /// Evaluate the constraint in the context of the current term map.
     pub(super) fn check_constraint(
         &self, constraint: &Constraint,
-    ) -> Result<BoolInterval, SolverError> {
+    ) -> Result<SolverResult, SolverError> {
         // If this is equality...
         match *constraint {
             Constraint::Cmp {
@@ -818,12 +825,18 @@ impl Resolver<'_> {
                 ref rhs,
                 ..
             } => {
-                let lhs_interval = self.resolve_term(lhs)?;
-                let rhs_interval = self.resolve_term(rhs)?;
-                self.resolve_comparison(lhs, rhs, *op)
+                let res = self.resolve_comparison(lhs, rhs, *op)?;
+                if res == BoolInterval::Unknown
+                    && lhs.only_uniforms(&self.uniform_map)
+                    && rhs.only_uniforms(&self.uniform_map)
+                {
+                    return Ok(SolverResult::Maybe);
+                }
+
+                Ok(res.into())
             }
             Constraint::Identity { ref term, .. } => match self.resolve_term(term)?.as_ref() {
-                IntervalKind::Bool(interval) => Ok(*interval),
+                IntervalKind::Bool(interval) => Ok((*interval).into()),
                 other => Err(SolverError::TypeMismatch {
                     expected: "Bool",
                     have: other.variant_name(),
@@ -1065,6 +1078,7 @@ mod tests {
             Cow::Owned(Default::default()),
             Cow::Owned(FastHashMap::default()),
             &type_map,
+            Cow::Owned(FastHashSet::default()),
         );
         resolver.recompute = true;
 
@@ -1106,6 +1120,7 @@ mod tests {
             Cow::Owned(Default::default()),
             Cow::Owned(FastHashMap::default()),
             &type_map,
+            Cow::Owned(FastHashSet::default()),
         );
 
         // Refine `x` with the predicate x < 5

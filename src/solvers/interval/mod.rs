@@ -828,6 +828,25 @@ bitflags! {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, strum_macros::Display)]
+pub enum SolverResult {
+    Yes,
+    Maybe,
+    No,
+}
+
+impl From<BoolInterval> for SolverResult {
+    #[inline]
+    fn from(interval: BoolInterval) -> Self {
+        if interval == BoolInterval::True {
+            Self::Yes
+        } else {
+            Self::No
+        }
+    }
+}
+
 impl BoolInterval {
     pub const TOP: Self = Self::Unknown;
     /// Return whether the two intervals are unit and equivalent. If either is empty, this returns empty.

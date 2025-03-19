@@ -1975,7 +1975,7 @@ pub enum SolverErrorCode {
     InvalidContext = 11,
 }
 
-use crate::solvers::interval::{IntervalError, SolverError};
+use crate::solvers::interval::{IntervalError, SolverError, SolverResult};
 
 impl From<SolverError> for SolverErrorCode {
     fn from(e: SolverError) -> Self {
@@ -2008,7 +2008,7 @@ pub enum MaybeSolution {
 
 /// The result of a constraint.
 #[repr(C)]
-pub struct ConstraintResult(u32, bool);
+pub struct ConstraintResult(u32, SolverResult);
 
 #[repr(C)]
 pub struct ConstraintSolution {
@@ -2017,17 +2017,17 @@ pub struct ConstraintSolution {
     results: *const ConstraintResult,
 }
 
-impl From<(u32, bool)> for ConstraintResult {
-    fn from((id, result): (u32, bool)) -> Self {
+impl From<(u32, SolverResult)> for ConstraintResult {
+    fn from((id, result): (u32, SolverResult)) -> Self {
         Self(id, result)
     }
 }
-impl From<&(u32, bool)> for ConstraintResult {
-    fn from((id, result): &(u32, bool)) -> Self {
+impl From<&(u32, SolverResult)> for ConstraintResult {
+    fn from((id, result): &(u32, SolverResult)) -> Self {
         Self(*id, *result)
     }
 }
-impl From<ConstraintResult> for (u32, bool) {
+impl From<ConstraintResult> for (u32, SolverResult) {
     fn from(result: ConstraintResult) -> Self {
         (result.0, result.1)
     }
@@ -2049,13 +2049,15 @@ impl Context {
     /// a memory leak will occur.
     ///
     /// This will return an `FfiSolution` which contains the results.
-    /// The results are in the form (id, bool). `id` corresponds to the
+    /// The results are in the form (id, result). `id` corresponds to the
     /// id of the constraint that was provided when the constraint was added.
-    /// the `bool` corresponds to the result of the constraint. It is `true`
+    /// the `result` corresponds to the result of the constraint. It is `Yes`
     /// if the constraint is always satisfied. In this case, the bounds check
-    /// can be removed. `false` means that the constraint could not
+    /// can be removed. `No` means that the constraint could not
     /// be proven to always be satisfied. In this case, the bounds check
-    /// must be kept.
+    /// must be kept. `Maybe` means that the constraint can be tested for
+    /// satisfiability if the system is provided with concrete values for
+    /// all uniform variables and array lengths.
     ///
     /// In this current implementation, there is not a distinction
     /// between checks that are always violated and checks that may be violated.
@@ -2085,7 +2087,7 @@ impl Context {
             Err(e) => return MaybeSolution::Error(e.into()),
         };
 
-        let result: Vec<ConstraintResult> = ConstraintHelper::solution_to_true_false(&result)
+        let result: Vec<ConstraintResult> = ConstraintHelper::solution_to_result(&result)
             .iter()
             .map(Into::into)
             .collect();

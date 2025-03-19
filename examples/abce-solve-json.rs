@@ -1,7 +1,3 @@
-// SPDX-FileCopyrightText: 2025 University of Rochester
-//
-// SPDX-License-Identifier: MIT
-
 // The main.rs will load a json file and attempt to solve it.
 use abc_helper::{ConstraintHelper, ConstraintModule};
 use anyhow::{Context, Result};
@@ -62,7 +58,7 @@ fn main() -> Result<()> {
     let res = res.unwrap();
 
     log::info!("Constraint solution for summary {idx}:");
-    for (i, a) in ConstraintHelper::solution_to_true_false(&res) {
+    for (i, a) in ConstraintHelper::solution_to_result(&res) {
         log::info!("Constraint id: {i}: {a}");
     }
 

@@ -33,7 +33,7 @@ use super::{
     },
     I64Interval, U64Interval, WrappedInterval,
 };
-use super::{BoolInterval, I32Interval, Interval, IntervalError, U32Interval};
+use super::{BoolInterval, I32Interval, Interval, IntervalError, SolverResult, U32Interval};
 
 use crate::solvers::interval::{self, IntervalBoundary};
 use crate::{
@@ -1595,7 +1595,7 @@ pub fn enumerate_constraints<'a>(
 /// Also propagates errors that occur during the resolution of the constraints.
 pub(crate) fn check_constraints(
     module: &ConstraintModule, id: SummaryId,
-) -> Result<FastHashMap<u32, Vec<IntervalKind>>, SolverError> {
+) -> Result<FastHashMap<u32, Vec<SolverResult>>, SolverError> {
     // The target is the function that we are trying to prove bounds checks for.
     let target = module
         .summaries
@@ -1624,6 +1624,7 @@ pub(crate) fn check_constraints(
         Cow::Borrowed(&term_map),
         Cow::Owned(Default::default()),
         &module.type_map,
+        Cow::Borrowed(&module.uniform_vars),
     );
 
     refine_unguarded_assumptions(module, target, &mut core_resolver)?;
@@ -1633,7 +1634,7 @@ pub(crate) fn check_constraints(
     // Each predicate gets its own resolver.
     let mut predicate_to_resolver: FastHashMap<Handle<Predicate>, Resolver> =
         FastHashMap::default();
-    let mut results = FastHashMap::<u32, Vec<IntervalKind>>::default();
+    let mut results = FastHashMap::<u32, Vec<SolverResult>>::default();
 
     for (constraint, idx) in enumerate_constraints(module, target, id) {
         log::trace!("Checking constraint {} (id: {})", constraint, idx);
@@ -1655,20 +1656,18 @@ pub(crate) fn check_constraints(
                         }
                         resolver.check_constraint(constraint)?
                     }
-                    Err(SolverError::DeadCode) => BoolInterval::Empty,
-                    Err(_) => BoolInterval::Unknown,
+                    Err(SolverError::DeadCode) => interval::SolverResult::Yes,
+                    Err(_) => interval::SolverResult::No,
                 }
             };
 
             log::trace!("Resolved constraint to {:}", constraint_resolution);
+            results.entry(*idx).or_default().push(constraint_resolution);
+        } else {
             results
                 .entry(*idx)
                 .or_default()
-                .push(IntervalKind::Bool(constraint_resolution));
-        } else {
-            results.entry(*idx).or_default().push(IntervalKind::Bool(
-                core_resolver.check_constraint(constraint)?,
-            ));
+                .push(core_resolver.check_constraint(constraint)?);
         }
     }
 

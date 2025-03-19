@@ -11,7 +11,7 @@ use log::{info as log_info, trace as log_trace, warn as log_warning};
 
 use crate::{
     add_assumption_impl,
-    solvers::interval::{translator::IntervalKind, BoolInterval},
+    solvers::interval::{translator::IntervalKind, BoolInterval, SolverResult},
     AbcExpression, AbcScalar, AbcType, Assumption, AssumptionOp, BinaryOp, CmpOp, Constraint,
     ConstraintId, ConstraintOp, FastHashMap, FastHashSet, Handle, Predicate, SubstituteTerm,
     Summary, Term, Var, CONSTRAINT_LIMIT, NONETYPE, RET, SUMMARY_LIMIT,
@@ -484,7 +484,7 @@ impl ConstraintModule {
     pub fn solve(
         &self, idx: SummaryId,
     ) -> Result<
-        FastHashMap<u32, Vec<IntervalKind>>,
+        FastHashMap<u32, Vec<SolverResult>>,
         crate::solvers::interval::translator::SolverError,
     > {
         log_info!("Solving constraints for summary {idx}");
@@ -603,24 +603,23 @@ impl ConstraintHelper {
         Ok(())
     }
     /// Convert the solution to a vector containing the (id, result) pairs.
-    pub fn solution_to_true_false(
-        solution: &FastHashMap<u32, Vec<IntervalKind>>,
-    ) -> Vec<(u32, bool)> {
+    pub fn solution_to_result(
+        solution: &FastHashMap<u32, Vec<SolverResult>>,
+    ) -> Vec<(u32, SolverResult)> {
         solution
             .iter()
             .map(|(k, v)| {
-                let mut result = BoolInterval::empty();
+                let mut result = SolverResult::Yes;
                 for kind in v {
-                    if let Some(b) = kind.as_bool() {
-                        if b.contains(BoolInterval::False) {
-                            return (*k, false);
+                    match kind {
+                        SolverResult::No => {
+                            return (*k, SolverResult::No);
                         }
-                    } else {
-                        return (*k, false);
+                        SolverResult::Maybe => result = SolverResult::Maybe,
+                        SolverResult::Yes => {}
                     }
                 }
-
-                (*k, true)
+                (*k, result)
             })
             .collect()
     }
@@ -633,7 +632,7 @@ impl ConstraintHelper {
     pub fn solve(
         &self, idx: SummaryId,
     ) -> Result<
-        FastHashMap<u32, Vec<IntervalKind>>,
+        FastHashMap<u32, Vec<SolverResult>>,
         crate::solvers::interval::translator::SolverError,
     > {
         #[allow(clippy::useless_conversion)]

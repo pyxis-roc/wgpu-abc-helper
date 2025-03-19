@@ -1033,6 +1033,80 @@ impl AbcExpression {
     }
 }
 
+impl AbcExpression {
+    /// Returns true if any of the following are true:
+    ///
+    /// - The expression is a literal or is comprised entirely of literals, array lengths, or terms appearing in the "uniforms" set.
+    /// - The expression is a Min(a, b) where this method returns true for either `a` or `b`.
+    /// - The expression's sub-terms are all uniform.
+    fn only_uniforms(&self, uniforms: &FastHashSet<Term>) -> bool {
+        #[allow(clippy::match_same_arms)]
+        match self {
+            // For min and min only, we short-circuit if either side is a uniform.
+            // This is useful because we can limit the upper bound of the right hand side.
+            Self::Min(a, b) => a.only_uniforms(uniforms) || b.only_uniforms(uniforms),
+            Self::Abs(a) | Self::Splat(a, _) | AbcExpression::UnaryOp(_, a) => {
+                a.only_uniforms(uniforms)
+            }
+            Self::Pow {
+                base: a,
+                exponent: b,
+            }
+            | Self::Dot(a, b)
+            | Self::Max(a, b)
+            | Self::BinaryOp(_, a, b) => a.only_uniforms(uniforms) && b.only_uniforms(uniforms),
+            // If the base is uniform, then any access into it is a uniform..
+            AbcExpression::FieldAccess { base, .. } => base.only_uniforms(uniforms),
+            AbcExpression::Store { .. }
+            | AbcExpression::StructStore { .. }
+            | AbcExpression::Matrix { .. }
+            | AbcExpression::Vector { .. } => false,
+            AbcExpression::Select(cond, a, b) => {
+                cond.only_uniforms(uniforms)
+                    && a.only_uniforms(uniforms)
+                    && b.only_uniforms(uniforms)
+            }
+            AbcExpression::ArrayLength(_) | AbcExpression::ArrayLengthDim(_, _) => true,
+            AbcExpression::Cast(a, ty) => {
+                matches!(*ty, AbcScalar::I32 | AbcScalar::U32) && a.only_uniforms(uniforms)
+            }
+            AbcExpression::IndexAccess { .. } => false,
+        }
+    }
+}
+
+impl Term {
+    /// Return whether the term is comprised entirely of literals, array length terms, and terms appearing in the "uniforms" set.
+    fn only_uniforms(&self, uniforms: &FastHashSet<Term>) -> bool {
+        if self.is_literal() || self.is_array_length_like() || uniforms.contains(self) {
+            return true;
+        }
+        if let Self::Expr(e) = self {
+            return e.only_uniforms(uniforms);
+        }
+        if let Self::Predicate(p) = self {
+            return p.only_uniforms(uniforms);
+        }
+
+        false
+    }
+}
+
+impl Predicate {
+    fn only_uniforms(&self, uniforms: &FastHashSet<Term>) -> bool {
+        match self {
+            Predicate::False | Predicate::True => true,
+            Predicate::And(a, b) | Predicate::Or(a, b) => {
+                a.only_uniforms(uniforms) && b.only_uniforms(uniforms)
+            }
+            Predicate::Comparison(_, a, b) => {
+                a.only_uniforms(uniforms) && b.only_uniforms(uniforms)
+            }
+            Predicate::Not(a) => a.only_uniforms(uniforms),
+            Predicate::Unit(a) => a.only_uniforms(uniforms),
+        }
+    }
+}
 macro_rules! expression_sub {
     ($self:ident, $name:ident, ($($args:expr),*)) => {
         match $self {

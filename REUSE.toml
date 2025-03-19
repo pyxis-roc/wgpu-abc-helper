@@ -7,7 +7,7 @@ SPDX-FileCopyrightText = "2024-2025 University of Rochester"
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
-path = ["src/**/*.rs", "Cargo.toml", "Cargo.lock", ".pre-commit-config.yaml", "**/REUSE.toml", "*.yaml"]
+path = ["src/**/*.rs", "Cargo.toml", "Cargo.lock", ".pre-commit-config.yaml", "**/REUSE.toml", "*.yaml", "tests/**/*.rs", "examples/**/*.rs"]
 SPDX-FileCopyrightText = "2024-2025 University of Rochester"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
