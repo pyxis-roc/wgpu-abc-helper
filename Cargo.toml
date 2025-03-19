@@ -35,7 +35,7 @@ cffi = ["dep:cbindgen", "dep:ffi-support"]
 
 
 [lib]
-crate-type = ["rlib", "cdylib", "staticlib"]
+crate-type = ["rlib", "cdylib"]
 
 [dev-dependencies]
 rstest = "0.22.0"
