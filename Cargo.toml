@@ -35,11 +35,13 @@ cffi = ["dep:cbindgen", "dep:ffi-support"]
 
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dev-dependencies]
 rstest = "0.22.0"
 env_logger = "0.10.0"
+anyhow = "1.0.97"
+clap = { version = "4.5.32", features = ["derive"] }
 
 [lints.rust]
 # Add rust_analyzer as a valid cfg lint.
@@ -54,3 +56,6 @@ must_use_candidate = { level = "allow", priority = 1 }
 default_trait_access = { level = "allow", priority = 1 }
 module_name_repetitions = { level = "allow", priority = 1 } # We have FFI functions that need to have module names repeated.
 wildcard_imports = { level = "allow", priority = 1 }        # Wildcard imports are fine. Anything else is too verbose.
+
+[[example]]
+name = "abce-solve-json"

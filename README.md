@@ -35,3 +35,16 @@ lib:  `/path/to/wgpu-abc-helper/target/release/`
 The header file is named `wgpu_abc_helper.hpp`, and the library is `abc_helper`.
 
 See `ffi_examples/Makefile` for an example.
+
+
+# Using abce-solve-json
+
+Included is a binary capable of deserializing a module and then solving it from rust. This is meant to be used for debugging purposes to identify
+why the solver is failing.
+
+Running it requires the serialized json file with the constraints. It can be invoked via:
+
+``cargo run --example abce-solve-json -- /path/to/serialized/module.json --idx=... --log=/path/to/log/file.log``
+
+The optional ``--idx`` flag specifies which summary to evaluate the constraints for, and defaults to the last summary in the json.  
+The optional ``--log`` flag specifies a path to where a log file should be written. If not specified, the log will be written to stdout.

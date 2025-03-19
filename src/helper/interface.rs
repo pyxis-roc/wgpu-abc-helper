@@ -59,6 +59,12 @@ pub enum ConstraintError {
 #[repr(C)]
 pub struct SummaryId(pub(crate) usize);
 
+impl std::fmt::Display for SummaryId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.0)
+    }
+}
+
 impl From<u32> for SummaryId {
     fn from(id: u32) -> Self {
         SummaryId(id as usize)
@@ -464,6 +470,26 @@ impl Default for ConstraintModule {
 }
 
 impl ConstraintModule {
+    /// Get the number of summaries in the module.
+    pub fn get_num_summaries(&self) -> usize {
+        self.summaries.len()
+    }
+
+    /// Solve the constraints in the module.
+    /// This will return a map from the constraint ID to the result of the constraint.
+    /// The result is a vector of `IntervalKind` that represents the possible values of the constraint.
+    ///
+    /// # Errors
+    /// Propagates any errors encountered when solving the constraints.
+    pub fn solve(
+        &self, idx: SummaryId,
+    ) -> Result<
+        FastHashMap<u32, Vec<IntervalKind>>,
+        crate::solvers::interval::translator::SolverError,
+    > {
+        log_info!("Solving constraints for summary {idx}");
+        crate::solvers::interval::translator::check_constraints(self, idx)
+    }
     #[inline]
     pub fn global_constraints(&self) -> &[(Constraint, u32)] {
         &self.global_constraints
