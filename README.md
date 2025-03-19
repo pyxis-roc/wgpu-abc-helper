@@ -46,5 +46,5 @@ Running it requires the serialized json file with the constraints. It can be inv
 
 ``cargo run --example abce-solve-json -- /path/to/serialized/module.json --idx=... --log=/path/to/log/file.log``
 
-The optional ``--idx`` flag specifies which summary to evaluate the constraints for, and defaults to the last summary in the json.  
+The optional ``--idx`` flag specifies which summary (0-based index) to evaluate the constraints for, and defaults to the last summary in the json.  
 The optional ``--log`` flag specifies a path to where a log file should be written. If not specified, the log will be written to stdout.
