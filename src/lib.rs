@@ -42,6 +42,7 @@ provides a few mechanisms to handle loops.
 
 // Clippy lints
 #![allow(clippy::must_use_candidate, clippy::default_trait_access)]
+#![allow(dead_code)]
 
 use std::{
     borrow::Borrow,
@@ -434,6 +435,13 @@ impl Assumption {
     pub fn get_lhs(&self) -> &Term {
         match self {
             Self::Assign { lhs, .. } | Self::Inequality { lhs, .. } => lhs,
+        }
+    }
+
+    pub fn get_rhs(&self) -> Option<&Term> {
+        match self {
+            Self::Assign { rhs, .. } => Some(rhs),
+            Self::Inequality { .. } => None,
         }
     }
 
@@ -1073,6 +1081,30 @@ impl AbcExpression {
             AbcExpression::IndexAccess { .. } => false,
         }
     }
+
+    fn only_literals(&self) -> bool {
+        match self {
+            Self::Vector { components, .. } => components.iter().all(Term::only_literals),
+            Self::Matrix { components, .. } => components.iter().all(Term::only_literals),
+            Self::UnaryOp(_, t) => t.only_literals(),
+            Self::Cast(t, _) => t.only_literals(),
+            Self::ArrayLength(t) => t.only_literals(),
+            Self::ArrayLengthDim(t, _) => t.only_literals(),
+            Self::BinaryOp(_, l, r) => l.only_literals() && r.only_literals(),
+            Self::FieldAccess { base, .. } => base.only_literals(),
+            Self::Splat(t, _) => t.only_literals(),
+            Self::Select(c, a, b) => c.only_literals() && a.only_literals() && b.only_literals(),
+            Self::IndexAccess { base, index } => base.only_literals() && index.only_literals(),
+            Self::Store { base, index, value } => {
+                base.only_literals() && index.only_literals() && value.only_literals()
+            }
+            Self::StructStore { base, value, .. } => base.only_literals() && value.only_literals(),
+            Self::Max(a, b) | Self::Min(a, b) => a.only_literals() && b.only_literals(),
+            Self::Abs(t) => t.only_literals(),
+            Self::Pow { base, exponent } => base.only_literals() && exponent.only_literals(),
+            Self::Dot(a, b) => a.only_literals() && b.only_literals(),
+        }
+    }
 }
 
 impl Term {
@@ -1093,6 +1125,16 @@ impl Term {
 
         false
     }
+
+    fn only_literals(&self) -> bool {
+        match self {
+            Self::Literal(_) => true,
+            Self::Expr(e) => e.only_literals(),
+            Self::Var(_) => false,
+            Self::Predicate(p) => p.only_literals(),
+            _ => false,
+        }
+    }
 }
 
 impl Predicate {
@@ -1107,6 +1149,16 @@ impl Predicate {
             }
             Predicate::Not(a) => a.only_uniforms(uniforms),
             Predicate::Unit(a) => a.only_uniforms(uniforms),
+        }
+    }
+
+    fn only_literals(&self) -> bool {
+        match self {
+            Predicate::False | Predicate::True => true,
+            Predicate::And(a, b) | Predicate::Or(a, b) => a.only_literals() && b.only_literals(),
+            Predicate::Comparison(_, a, b) => a.only_literals() && b.only_literals(),
+            Predicate::Not(a) => a.only_literals(),
+            Predicate::Unit(a) => a.only_literals(),
         }
     }
 }

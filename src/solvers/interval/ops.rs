@@ -2064,4 +2064,22 @@ mod tests {
         let result = x.interval_shr(&y);
         assert_eq!(result.into(), expected);
     }
+
+    // We want to test interval cast
+    #[rstest]
+    #[case::cast_positive((4i32, 8i32), WrappedInterval::Basic(BasicInterval::from_literals(4u32, 8u32)))]
+    #[case::cast_negative((-4i32, 8i32), WrappedInterval::Basic(BasicInterval::from_literals(0u32, u32::MAX)))]
+    fn test_cast_i32_u32(#[case] x: (i32, i32), #[case] expected: WrappedInterval<u32>) {
+        let x = BasicInterval::new(x.0, x.1);
+        let result: WrappedInterval<u32> = x.interval_cast();
+        assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    #[case::cast_positive((0u32, 15u32), WrappedInterval::Basic(BasicInterval::from_literals(0i32, 15i32)))]
+    fn test_cast_u32_i32(#[case] x: (u32, u32), #[case] expected: WrappedInterval<i32>) {
+        let x = BasicInterval::new(x.0, x.1);
+        let result: WrappedInterval<i32> = x.interval_cast();
+        assert_eq!(result, expected);
+    }
 }

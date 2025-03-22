@@ -107,7 +107,7 @@ macro_rules! handle_literals_or_empty {
             _ => (),
         };
     };
-    (@refine, $self:expr, $lhs:expr, $rhs:expr, $op:expr $(,)?) => {
+    (@refine, $self:expr, $lhs:expr, $rhs:expr, $op:expr, $dirty:expr $(,)?) => {
         match ($lhs, $rhs) {
             (Term::Empty, _) | (_, Term::Empty) => {
                 return Ok(BoolInterval::Empty);
@@ -116,7 +116,7 @@ macro_rules! handle_literals_or_empty {
                 return Ok(resolve_literal_cmp_literal(l, $op, r));
             }
             (Term::Literal(ref l), a) | (a, Term::Literal(ref l)) => {
-                return $self.refine_literal_comparison(a, l, $op)
+                return $self.refine_literal_comparison(a, l, $op, $dirty)
             }
             _ => (),
         };
@@ -270,8 +270,9 @@ impl<'resolver> Resolver<'resolver> {
     ///
     /// This updates term map.
     pub(super) fn refine_literal_comparison(
-        &mut self, term: &Term, literal: &Literal, op: CmpOp,
+        &mut self, term: &Term, literal: &Literal, op: CmpOp, dirty: &mut FastHashSet<Term>,
     ) -> Result<BoolInterval, SolverError> {
+        log::trace!("Refining literal comparison: {term} {op} {literal}");
         match term {
             Term::Empty => Ok(BoolInterval::Empty),
             Term::Predicate(_) => Err(SolverError::TypeMismatch {
@@ -284,7 +285,9 @@ impl<'resolver> Resolver<'resolver> {
             Term::Var(_) | Term::Expr(_) => {
                 let intersect_with = cmp_to_interval!(self, term, literal, op);
                 let existing = short_circuit_literal_comparison!(term, self, literal, op, {
+                    log::trace!("Updated {term} to {intersect_with}, and marked as dirty.");
                     self.term_map.to_mut().insert(term.clone(), intersect_with);
+                    dirty.insert(term.clone());
                     return Ok(BoolInterval::Unknown);
                 });
                 let intersection = existing.intersection(&intersect_with)?;
@@ -293,7 +296,9 @@ impl<'resolver> Resolver<'resolver> {
                 } else if *existing == intersection {
                     Ok(BoolInterval::True)
                 } else {
+                    log::trace!("Updated {term} to {intersection}, and marked as dirty.");
                     self.term_map.to_mut().insert(term.clone(), intersection);
+                    dirty.insert(term.clone());
                     Ok(BoolInterval::Unknown)
                 }
             }
@@ -306,6 +311,7 @@ impl<'resolver> Resolver<'resolver> {
     pub(super) fn resolve_literal_comparison(
         &self, term: &'resolver Term, literal: &Literal, op: CmpOp,
     ) -> Result<BoolInterval, SolverError> {
+        log::trace!("Resolving literal comparison: {term} {op} {literal}");
         match term {
             Term::Empty => Ok(BoolInterval::Empty),
             Term::Predicate(_) => Err(SolverError::TypeMismatch {
@@ -366,17 +372,17 @@ impl<'resolver> Resolver<'resolver> {
         }
         result
     }
-    /// Resolve the comparison between two terms into an interval, and optionally update the
+
+    /// Resolve the comparison between two terms into an interval, and update the
     /// intervals being compared.
     ///
     /// The return value for this function will be a reference to a `BooleanInterval` that
     ///
     /// If `update` is true, then this will refine the intervals in the term map
     pub(super) fn refine_comparison(
-        &mut self, lhs: &Term, rhs: &Term, op: CmpOp,
+        &mut self, lhs: &Term, rhs: &Term, op: CmpOp, dirty: &mut FastHashSet<Term>,
     ) -> Result<BoolInterval, SolverError> {
-        log::debug!("[TEST] Refining intervals for comparison: {lhs} {op} {rhs}");
-        handle_literals_or_empty!(@refine, self, lhs, rhs, op);
+        handle_literals_or_empty!(@refine, self, lhs, rhs, op, dirty);
 
         // If the term does not exist in the map, then we set its type...
 
@@ -395,7 +401,7 @@ impl<'resolver> Resolver<'resolver> {
             return Ok(BoolInterval::Empty);
         }
 
-        log::debug!("lhs is: {lhs_intrvl}, rhs is: {rhs_intrvl}");
+        log::debug!("lhs ({lhs}) is: {lhs_intrvl}, rhs ({rhs}) is: {rhs_intrvl}");
 
         /// Given the mode, resolve to a pair of Option<IntervalKind> that can be intersected with to refine `lhs` and `rhs` re
         if lhs_intrvl.is_top() && rhs_intrvl.is_top() {
@@ -473,6 +479,7 @@ impl<'resolver> Resolver<'resolver> {
                         return Ok(BoolInterval::False);
                     }
                     if new_intrvl == $interval {
+                        log::trace!("No change in interval for {}", $term);
                         truthy = true;
                     } else {
                         self.term_map.to_mut().insert($term.clone(), new_intrvl);
@@ -482,9 +489,23 @@ impl<'resolver> Resolver<'resolver> {
         }
 
         intersect_and_update!(lhs, lhs_intrvl, lhs_intersect);
-        intersect_and_update!(rhs, rhs_intrvl, rhs_intersect);
 
-        if truthy {
+        if !truthy {
+            // lhs has been refined, so we need to mark it as dirty.
+            log::trace!("lhs ({lhs}) has been refined to: {lhs_intrvl}");
+            dirty.insert(lhs.clone());
+        }
+
+        // Record truthy and reset.
+        let old_truthy = truthy;
+        truthy = false;
+        intersect_and_update!(rhs, rhs_intrvl, rhs_intersect);
+        if !truthy {
+            log::trace!("rhs ({rhs}) has been refined to: {rhs_intrvl}");
+            dirty.insert(rhs.clone());
+        }
+
+        if truthy || old_truthy {
             Ok(BoolInterval::True)
         } else {
             Ok(BoolInterval::Unknown)
@@ -494,12 +515,12 @@ impl<'resolver> Resolver<'resolver> {
     /// Body of `predicate_and` match arm for `refine_predicate`
     pub(super) fn refine_predicate_and(
         &'resolver mut self, lhs: &'resolver Handle<Predicate>, rhs: &'resolver Handle<Predicate>,
-        update: bool,
+        update: bool, dirty: &mut FastHashSet<Term>,
     ) -> Result<BoolInterval, SolverError> {
         let (a, b);
         if update {
-            a = self.refine_predicate(lhs)?;
-            b = self.refine_predicate(rhs)?;
+            a = self.refine_predicate(lhs, dirty)?;
+            b = self.refine_predicate(rhs, dirty)?;
         } else {
             a = self.resolve_predicate(lhs)?;
             b = self.resolve_predicate(rhs)?;
@@ -526,7 +547,7 @@ impl<'resolver> Resolver<'resolver> {
     }
 
     pub(super) fn refine_predicate_or(
-        &self, or_term: &'resolver Predicate, update: bool,
+        &self, or_term: &'resolver Predicate, update: bool, dirty: &mut FastHashSet<Term>,
     ) -> Result<(Option<&'resolver Predicate>, BoolInterval), SolverError> {
         // keep track of the singular truthy prediate.
         let mut truthy: Option<&Predicate> = None;
@@ -846,13 +867,14 @@ impl Resolver<'_> {
             },
         }
     }
-    ///  Refine the intervals for the terms in the predicate.
+
+    /// Refine the intervals for the terms in the predicate.
     ///
     /// This is similar to `resolve`, except that it refines the intervals for the terms in the predicate.
     pub(super) fn refine_predicate(
-        &mut self, pred: &Predicate,
+        &mut self, pred: &Predicate, dirty: &mut FastHashSet<Term>,
     ) -> Result<BoolInterval, SolverError> {
-        log::trace!("Refining predicate: {pred}");
+        log::trace!("Refining intervals from assuming true: {pred}");
         match pred {
             Predicate::True => Ok(BoolInterval::True),
             Predicate::False => Ok(BoolInterval::False),
@@ -864,7 +886,7 @@ impl Resolver<'_> {
                 for predicate in pred.get_children_set() {
                     // We _will_ update!
                     // If this ends up being `false`, then we can return `false` and short circuit..
-                    let resolved = self.refine_predicate(predicate)?;
+                    let resolved = self.refine_predicate(predicate, dirty)?;
                     if resolved == BoolInterval::False {
                         return Ok(BoolInterval::False);
                     }
@@ -948,7 +970,7 @@ impl Resolver<'_> {
                     _ => unreachable!("Unknown flags should never be set in a BoolInterval"),
                 })
             }
-            Predicate::Comparison(op, lhs, rhs) => self.refine_comparison(lhs, rhs, *op),
+            Predicate::Comparison(op, lhs, rhs) => self.refine_comparison(lhs, rhs, *op, dirty),
         }
     }
     /// Obtain the domain of the predicate.
@@ -1089,7 +1111,10 @@ mod tests {
         };
         let assumption_to_predicate = my_assumption.to_predicate();
 
-        resolver.refine_predicate(assumption_to_predicate.as_ref().expect("Refinement failed"));
+        resolver.refine_predicate(
+            assumption_to_predicate.as_ref().expect("Refinement failed"),
+            &mut FastHashSet::default(),
+        );
 
         for term in resolver.term_map.iter() {
             println!("{term:?}");
@@ -1123,11 +1148,12 @@ mod tests {
             Cow::Owned(FastHashSet::default()),
         );
 
+        let mut dirty = FastHashSet::default();
         // Refine `x` with the predicate x < 5
         let literal = Literal::U32(5);
         let op = CmpOp::Lt;
         let result = resolver
-            .refine_literal_comparison(&x_var, &literal, op)
+            .refine_literal_comparison(&x_var, &literal, op, &mut dirty)
             .unwrap();
 
         // x should now be [0, 4]
@@ -1138,7 +1164,7 @@ mod tests {
 
         // Now, refine x with x > 2
         resolver
-            .refine_literal_comparison(&x_var, &Literal::U32(2), CmpOp::Gt)
+            .refine_literal_comparison(&x_var, &Literal::U32(2), CmpOp::Gt, &mut dirty)
             .unwrap();
         // x sxhould now be [3, 4]
         {
@@ -1146,10 +1172,14 @@ mod tests {
             assert_eq!(res, &IntervalKind::U32(U32Interval::new_concrete(3, 4)));
         }
 
+        let dirty = &mut FastHashSet::default();
         // Refine `y` with y > x
         resolver
-            .refine_comparison(&y_var, &x_var, CmpOp::Gt)
+            .refine_comparison(&y_var, &x_var, CmpOp::Gt, dirty)
             .unwrap();
+        // x and y should be dirty...
+        assert!(dirty.contains(&x_var));
+        assert!(dirty.contains(&y_var));
         // y should now be [0, u32::MAX]
         {
             let res = resolver.term_map.get(&y_var).unwrap();
