@@ -1,12 +1,12 @@
 use crate::{
     solvers::interval::SolverResult, AbcExpression, AbcScalar, AbcType, Assumption, BinaryOp,
     CmpOp, ConstraintModule, FastHashMap, FastHashSet, Handle, Literal, Predicate, StructField,
-    Term,
+    Term, UnaryOp,
 };
 use std::borrow::Cow;
 
 use super::{
-    warn, BoolInterval, Borrow, Constraint, Entry, Interval, IntervalAbs, IntervalAdd, IntervalEq,
+    BoolInterval, Borrow, Constraint, Entry, Interval, IntervalAbs, IntervalAdd, IntervalEq,
     IntervalError, IntervalGe, IntervalGt, IntervalKind, IntervalLe, IntervalLt, IntervalMax,
     IntervalMin, IntervalMul, IntervalNe, IntervalSub, SolverError, U32Interval, Union,
 };
@@ -655,6 +655,17 @@ impl<'resolver> Resolver<'resolver> {
 ///
 #[allow(non_snake_case)]
 impl<'resolver> Resolver<'resolver> {
+    // #[allow(clippy::match_)]
+    pub(super) fn resolve_unary_op(
+        &self, op: UnaryOp, term: &'resolver Term,
+    ) -> Result<IntervalKind, SolverError> {
+        let interval = self.resolve_term(term)?.into_owned();
+        let my_fn = match op {
+            UnaryOp::Minus => IntervalKind::interval_neg,
+            o => return Err(SolverError::Unsupported(o.variant_name(), file!(), line!())),
+        };
+        my_fn(&interval).map_err(IntervalError::into)
+    }
     pub(super) fn resolve_binop(
         &self, op: BinaryOp, lhs: &'resolver Term, rhs: &'resolver Term,
     ) -> Result<IntervalKind, SolverError> {
@@ -818,7 +829,12 @@ impl<'resolver> Resolver<'resolver> {
                 .get(&Term::make_array_length(t))
                 .unwrap_or(&IntervalKind::U32(U32Interval::TOP))
                 .clone()),
-            Expr::ArrayLengthDim(inner, dim) => todo!("ArrayLengthDim"),
+            Expr::ArrayLengthDim(t, dim) => {
+                Ok(
+                    self.term_map.get(&Term::make_array_length_dim(t, *dim))
+                    .unwrap_or(&IntervalKind::U32(U32Interval::TOP))
+                    .clone())
+            },
             Expr::Abs(inner) => {
                 let inner_interval = self.resolve_term(inner)?;
                 Ok(inner_interval.interval_abs().into_owned())
@@ -828,13 +844,15 @@ impl<'resolver> Resolver<'resolver> {
 
             Expr::Cast(term, dest_ty) => Ok(self.resolve_cast(term, *dest_ty)),
             Expr::Dot(_, _) => {
-                warn!(
+                log::warn!(
                     "{} expression not supported. Resolving interval to top...",
                     expr.variant_name()
                 );
                 Ok(IntervalKind::Top)
             }
-            Expr::UnaryOp(op, Term) => todo!("UnaryOp"),
+            Expr::UnaryOp(op, t) => {
+                self.resolve_unary_op(*op, t)
+            },
 
             // Matrix, Vector, and Splat resolve to vector types, for which we don't have intervals.
             Expr::Matrix { .. } | Expr::Vector { .. } | Expr::Splat(_, _)
@@ -857,7 +875,8 @@ impl<'resolver> Resolver<'resolver> {
                 a.interval_min(&b).map_err(IntervalError::into)
             }
             Expr::Pow { .. } => {
-                todo!("Pow")
+                log::warn!("Pow expression not supported. Resolving interval to top...");
+                Ok(IntervalKind::Top)
             }
         };
 

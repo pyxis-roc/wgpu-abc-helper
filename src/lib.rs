@@ -149,6 +149,14 @@ pub enum UnaryOp {
     #[strum(to_string = "-")]
     Minus,
 }
+impl UnaryOp {
+    #[inline]
+    const fn variant_name(self) -> &'static str {
+        match self {
+            UnaryOp::Minus => "Minus",
+        }
+    }
+}
 
 #[cfg_attr(feature = "cffi", repr(C))]
 #[derive(

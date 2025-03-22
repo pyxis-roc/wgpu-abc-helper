@@ -162,12 +162,6 @@ impl std::fmt::Display for IntervalKind {
 }
 
 impl IntervalKind {
-    fn from_inequality_assumption() -> Self {
-        todo!()
-    }
-}
-
-impl IntervalKind {
     /// Return true if the contained interval is `top`.
     ///
     /// This means it is either `IntervalKind::Top`, or the wrapped interval is `Interval::TOP`.
@@ -542,6 +536,17 @@ impl IntervalKind {
         )
     }
 
+    /// Invokes the interval's `interval_neg` method.
+    fn interval_neg(&self) -> Result<Self, IntervalError> {
+        use std::borrow::Cow;
+        match self {
+            _ if self.is_empty() || self.is_top() => Ok(self.clone()),
+            Self::I32(interval) => Ok(interval.interval_neg().into()),
+            Self::I64(interval) => Ok(interval.interval_neg().into()),
+            _ => Err(IntervalError::InvalidOp("UnaryMinus", self.variant_name())),
+        }
+    }
+
     /// Invokes the interval's `interval_abs` method.
     fn interval_abs(&self) -> std::borrow::Cow<Self> {
         use std::borrow::Cow;
@@ -626,15 +631,6 @@ impl IntervalKind {
                 other.variant_name(),
             )),
         }
-        // todo!();
-        // same_arm_impl!(
-        //     a, b, orig, self, other,
-        //     Ok(a.interval_shr(b).into()),
-        //     Ok(IK::Top),
-        //     Err(IntervalError::InvalidOp("Shr", "Bool")),
-        //     (IntervalKind::Top, IntervalKind::Top) => Ok(IK::Top),
-        //     (a, b) => Err(IntervalError::InvalidBinOp("Shift Right", a.variant_name(), b.variant_name())),
-        // )
     }
 
     fn interval_max(&self, rhs: &Self) -> Result<Self, IntervalError> {
@@ -1336,36 +1332,6 @@ impl Literal {
             _ => IntervalKind::Top,
         }
     }
-}
-
-/// Convert the provided assumption into an interval.
-///
-/// `Dirty_units` is a flag that indicates whether or not we should recompute intervals
-/// for terms that are already in the term map.
-///
-pub fn interval_from_assumption(
-    assumption: &crate::Assumption, assumption_set: &FastHashSet<crate::Assumption>,
-    term_map: &mut FastHashMap<Term, IntervalKind>, dirty_units: &mut bool,
-) -> IntervalKind {
-    let new_term_map: FastHashMap<Term, IntervalKind> = Default::default();
-    let lhs = assumption.get_lhs();
-
-    // If dirty units is false, then we don't recompute.
-    if !*dirty_units {
-        if let Some(interval) = term_map.get(lhs) {
-            return interval.clone();
-        }
-    }
-
-    if lhs.is_var() {
-        *dirty_units = true;
-    }
-
-    // Okay, so we need to update the unit var with the rhs.
-
-    // Now, we have to refine the lhs by evaluating the `rhs`
-
-    todo!()
 }
 
 pub fn initialize_array_lengths(

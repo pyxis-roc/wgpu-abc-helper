@@ -773,6 +773,35 @@ impl<T: IntervalBoundary + num::Signed> IntervalNeg for BasicInterval<T> {
     }
 }
 
+impl<T: IntervalBoundary + num::Signed> IntervalNeg for CompoundInterval<T> {
+    type Output = WrappedInterval<T>;
+    fn interval_neg(&self) -> WrappedInterval<T> {
+        if self.is_empty_interval() {
+            return WrappedInterval::Empty;
+        }
+        if self.is_top() {
+            return WrappedInterval::Top;
+        }
+        let mut new = CompoundInterval::new();
+        for interval in self.iter() {
+            new.union_with_wrapped(&interval.interval_neg());
+        }
+        new.into()
+    }
+}
+
+impl<T: IntervalBoundary + num::Signed> IntervalNeg for WrappedInterval<T> {
+    type Output = WrappedInterval<T>;
+    fn interval_neg(&self) -> WrappedInterval<T> {
+        match self {
+            WrappedInterval::Empty => WrappedInterval::Empty,
+            WrappedInterval::Top => WrappedInterval::Top,
+            WrappedInterval::Basic(interval) => interval.interval_neg(),
+            WrappedInterval::Compound(intervals) => intervals.interval_neg(),
+        }
+    }
+}
+
 impl<T: IntervalBoundary> IntervalMax<BasicInterval<T>> for BasicInterval<T> {
     type Output = WrappedInterval<T>;
     fn interval_max(&self, rhs: &BasicInterval<T>) -> Self::Output {
