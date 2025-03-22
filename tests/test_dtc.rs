@@ -91,8 +91,8 @@ fn test_uniform_indexing_static(mut constraint_helper: ConstraintHelper) {
 
     let solver_result = constraint_helper.solve(idx).unwrap();
 
-    let mut s = serde_json::Serializer::with_formatter(std::io::stdout(), PrettyFormatter::new());
-    let result = constraint_helper.get_module().serialize(&mut s);
+    // let mut s = serde_json::Serializer::with_formatter(std::io::stdout(), PrettyFormatter::new());
+    // let result = constraint_helper.get_module().serialize(&mut s);
 
     assert_eq!(solver_result.len(), 1);
     let combined_results = ConstraintHelper::solution_to_result(&solver_result);

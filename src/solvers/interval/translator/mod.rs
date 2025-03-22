@@ -41,7 +41,7 @@ use crate::{
 };
 use crate::{
     Assumption, BinaryOp, CmpOp, Constraint, ConstraintId, ConstraintOp, FastHashSet, Literal,
-    Predicate, StructField, SummaryId,
+    Predicate, StructField, SummaryId, Var,
 };
 use log::warn;
 use strum::VariantNames;
@@ -1436,6 +1436,33 @@ impl Assumption {
     }
 }
 
+fn assumption_dfs<'a>(
+    key: &Handle<Predicate>,
+    assumptions: &'a FastHashMap<Handle<Predicate>, FastHashSet<&'a Assumption>>,
+    memo: &mut FastHashMap<Handle<Predicate>, FastHashSet<&'a Assumption>>,
+) -> Result<FastHashSet<&'a Assumption>, SolverError> {
+    // If already computed, return the cached result
+    if let Some(cached) = memo.get(key) {
+        return Ok(cached.clone());
+    }
+
+    let Some(sub_assumptions) = assumptions.get(key) else {
+        memo.insert(key.clone(), FastHashSet::default());
+        return Ok(FastHashSet::default());
+    };
+
+    let mut closure = sub_assumptions.clone();
+
+    for &sub_assumption in sub_assumptions {
+        // Get the transitive closure of the sub-assumption
+        let result = assumption_dfs(&sub_assumption.to_predicate()?, assumptions, memo)?;
+        // And extend the closure with it
+        closure.extend(result);
+    }
+    memo.insert(key.clone(), closure.clone());
+    Ok(closure)
+}
+
 /// Computes the transitive closure of a map of assumptions to sub-assumptions.
 ///
 /// # Arguments
@@ -1446,46 +1473,58 @@ impl Assumption {
 fn compute_transitive_closure<'a>(
     assumptions: &'a FastHashMap<Handle<Predicate>, FastHashSet<&'a Assumption>>,
 ) -> Result<FastHashMap<Handle<Predicate>, FastHashSet<&'a Assumption>>, SolverError> {
-    let mut result = FastHashMap::with_capacity_and_hasher(assumptions.len(), Default::default());
-
     // Helper function to compute the transitive closure for a single assumption
-    fn dfs<'a>(
-        key: &Handle<Predicate>,
-        assumptions: &'a FastHashMap<Handle<Predicate>, FastHashSet<&'a Assumption>>,
-        memo: &mut FastHashMap<Handle<Predicate>, FastHashSet<&'a Assumption>>,
-    ) -> Result<FastHashSet<&'a Assumption>, SolverError> {
-        // If already computed, return the cached result
-        if let Some(cached) = memo.get(key) {
-            return Ok(cached.clone());
-        }
 
-        let Some(sub_assumptions) = assumptions.get(key) else {
-            memo.insert(key.clone(), FastHashSet::default());
-            return Ok(FastHashSet::default());
-        };
-
-        let mut closure = sub_assumptions.clone();
-
-        for &sub_assumption in sub_assumptions {
-            // Get the transitive closure of the sub-assumption
-            let result = dfs(&sub_assumption.to_predicate()?, assumptions, memo)?;
-            // And extend the closure with it
-            closure.extend(result);
-        }
-        memo.insert(key.clone(), closure.clone());
-        Ok(closure)
-    }
-
+    let mut result = FastHashMap::with_capacity_and_hasher(assumptions.len(), Default::default());
     let mut memo = FastHashMap::with_capacity_and_hasher(assumptions.len(), Default::default());
 
     // iterate through each assumption.
     for assumption in assumptions.keys() {
         // Get the transitive closure of the assumptions.
-        let closure = dfs(assumption, assumptions, &mut memo)?;
+        let closure = assumption_dfs(assumption, assumptions, &mut memo)?;
         result.insert(assumption.clone(), closure);
     }
 
     Ok(result)
+}
+
+impl Term {
+    /// Determine whether the term is a unit var. That is, an expression against this narrows exactly one
+    /// term and nothing else.
+    fn is_unit_var(&self) -> bool {
+        match self {
+            Term::Var(_) => true,
+            Term::Expr(e) => match e.as_ref() {
+                AbcExpression::IndexAccess {
+                    base: Term::Var(_),
+                    index: Term::Literal(_),
+                } => true,
+                AbcExpression::FieldAccess {
+                    base: Term::Var(_),
+                    ty,
+                    field_idx,
+                    ..
+                } => {
+                    if let AbcType::Struct { members } = ty.as_ref() {
+                        members.get(*field_idx).is_some_and(|x| x.ty.is_scalar())
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+}
+
+fn is_comparison_against_literal(p: &Handle<Predicate>) -> bool {
+    // A term that is a comparison between a var and a literal
+    if let Predicate::Comparison(_, lhs, rhs) = p.as_ref() {
+        lhs.only_literals() || rhs.only_literals()
+    } else {
+        false
+    }
 }
 
 /// Continually resolve the assumptions until a fixed point is reached or [`MAX_PROPAGATION_CYCLES`] is reached.
@@ -1523,9 +1562,11 @@ fn assumption_propagation<'a>(
                 return Err(SolverError::DeadCode);
             }
 
-            // Mark the predicate as completed...
-
-            if dirty.is_empty() {
+            // Mark the predicate as completed only if it could ever be refined later.
+            // A comparison against a literal would never be able to be re-refined.
+            // e.g x < 4 only ever needs to be processed once.
+            // Same with ()
+            if dirty.is_empty() && !is_comparison_against_literal(&predicate) {
                 completed.insert(predicate);
                 continue;
             }
@@ -1546,7 +1587,9 @@ fn assumption_propagation<'a>(
             }
 
             dirty.clear();
-            completed.insert(predicate);
+            if (!is_comparison_against_literal(&predicate)) {
+                completed.insert(predicate);
+            }
         }
         worklist = new_worklist;
         iteration_cntr += 1;
@@ -1580,109 +1623,25 @@ fn resolve_from_assumption<'a, 'b>(
             }
         }
         let mut resolver = core_resolver.clone();
+        // let local_id_term = Term::Var(Var { name: "local_id".to_string()}.into());
+        // let local_id_access = Term::new_index_access(&local_id_term, &Term::Literal(Literal::U32(1)));
+        // let cast = Term::new_cast(local_id_access, AbcScalar::Sint(4).into());
+        // let cast_interval = resolver.get_interval_for_term(&cast);
+
+        // if let Some(interval) = cast_interval {
+        //     log::trace!("Value for {cast} is: {interval}");
+        // } else {
+        //     log::trace!("{cast} is unknown");
+        // };
 
         assumption_propagation(&mut resolver, worklist, term_dependencies)?;
+        for (term, interval) in resolver.term_map.iter() {
+            log::trace!("Resolution for {term}: {interval}");
+        }
         resolver_map.insert(guard.clone(), resolver);
     }
 
     Ok(resolver_map.get(guard).unwrap())
-
-    /*
-    let resolver = match assumption_map.get(guard) {
-        // This subsumes no intervals, just resolve the guard.
-        None => {
-            let mut new_resolver = core_resolver.clone();
-            new_resolver.set_recompute(true);
-            let p = guard.as_ref();
-
-            let mut worklist: Vec<&Predicate> = p.get_children_set_handles().into_iter().collect();
-            let resolved: Vec<&Predicate> = Vec::with_capacity(worklist.len());
-
-            // Continue to
-            while let Some(term) = worklist.pop() {
-                let mut dirty = FastHashSet::default();
-                resolved.push(term);
-                let interval =
-                    resolve_from_term(term, core_resolver, assumption_map, resolver_map)?;
-                let new_resolved = interval.get_sub_terms();
-                resolved.extend(new_resolved.iter().cloned());
-                worklist.extend(new_resolved.iter().cloned());
-            }
-
-            let result = new_resolver.refine_predicate(guard.as_ref(), &mut dirty)?;
-            if !result.contains(BoolInterval::True) {
-                return Err(SolverError::DeadCode);
-            }
-            new_resolver
-        }
-        Some(assumption_set) if assumption_set.is_empty() => no_subsuming_impl!(guard),
-        Some(assumption_set) => {
-            // Step 1: We refine the predicates from the guard.
-            let mut new_resolver = core_resolver.clone();
-            new_resolver.set_recompute(true);
-            new_resolver.refine_predicate(guard.as_ref(), &mut dirty)?;
-            // We need to determine the order that we resolve the assumptions in...
-            let mut level_1_assumptions = FastHashSet::default();
-            let mut other_assumptions = FastHashSet::default();
-            for assumption in assumption_set.iter() {
-                if assumption.is_inequality() {
-                    level_1_assumptions.insert(assumption);
-                    continue;
-                }
-                let lhs = assumption.get_lhs();
-                let rhs = assumption.get_rhs();
-                if lhs.is_literal() || rhs.is_some_and(|r| r.is_literal()) {
-                    level_1_assumptions.insert(assumption);
-                } else {
-                    other_assumptions.insert(assumption);
-                }
-            }
-
-            for assumption in level_1_assumptions {
-                log::trace!("Resolving assumption: {assumption} in level 1.");
-                let result = resolve_from_assumption(
-                    &assumption.to_predicate()?,
-                    core_resolver,
-                    assumption_map,
-                    resolver_map,
-                )?;
-                if !new_resolver.intersect(&result) {
-                    return Err(SolverError::DeadCode);
-                }
-                new_resolver.set_recompute(true);
-            }
-
-            // First, we do the assumptions where lhs is a literal
-            // Safety: We are guarded by the `is_empty` check above.
-            let first = unsafe { other_assumptions.clone().iter().next().unwrap_unchecked() }
-                .to_predicate()?;
-            let mut new_resolver =
-                resolve_from_assumption(&first, core_resolver, assumption_map, resolver_map)?
-                    .clone();
-
-            for assumption in other_assumptions.clone() {
-                let existing_resolver = resolve_from_assumption(
-                    &assumption.to_predicate()?,
-                    core_resolver,
-                    assumption_map,
-                    resolver_map,
-                )?;
-                if !new_resolver.intersect(&existing_resolver) {
-                    return Err(SolverError::DeadCode);
-                }
-
-                new_resolver.set_recompute(true);
-            }
-
-            new_resolver
-        }
-    };
-
-    Ok(resolver_map
-        .entry(guard.clone())
-        .or_insert(resolver)
-        .clone())
-         */
 }
 
 /// Return an iterator over every guard predicate in the module and target.
@@ -1728,7 +1687,7 @@ fn get_all_constraints<'a>(
 }
 
 impl Predicate {
-    fn collect_sub_terms<'a>(
+    fn collect_sub_terms(
         &self, memo: &mut FastHashMap<Term, FastHashSet<Term>>, sub_terms: &mut FastHashSet<Term>,
         insert: bool,
     ) {
@@ -2034,12 +1993,7 @@ pub(crate) fn check_constraints(
                     &term_dependencies,
                 );
                 match resolver {
-                    Ok(resolver) => {
-                        for (term, interval) in resolver.term_map.iter() {
-                            log::trace!("Resolution for {term}: {interval}");
-                        }
-                        resolver.check_constraint(constraint)?
-                    }
+                    Ok(resolver) => resolver.check_constraint(constraint)?,
                     Err(SolverError::DeadCode) => interval::SolverResult::Yes,
                     Err(_) => interval::SolverResult::No,
                 }

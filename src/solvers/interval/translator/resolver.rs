@@ -173,6 +173,10 @@ impl Clone for Resolver<'_> {
 }
 
 impl Resolver<'_> {
+    /// Get the current refined interval for a term.
+    pub fn get_interval_for_term(&self, term: &Term) -> Option<&IntervalKind> {
+        self.term_map.get(term)
+    }
     /// intersect this resolver with the other resolver.
     pub(super) fn intersect(&mut self, other: &Self) -> bool {
         if self.term_map.is_empty() && self.predicate_map.is_empty() {
@@ -379,17 +383,27 @@ impl<'resolver> Resolver<'resolver> {
     /// The return value for this function will be a reference to a `BooleanInterval` that
     ///
     /// If `update` is true, then this will refine the intervals in the term map
+    #[allow(clippy::too_many_lines)]
     pub(super) fn refine_comparison(
         &mut self, lhs: &Term, rhs: &Term, op: CmpOp, dirty: &mut FastHashSet<Term>,
     ) -> Result<BoolInterval, SolverError> {
         handle_literals_or_empty!(@refine, self, lhs, rhs, op, dirty);
+        log::trace!("Refining comparison: {lhs} {op} {rhs}");
 
         // If the term does not exist in the map, then we set its type...
 
         let (lhs_intrvl, rhs_intrvl);
         if self.recompute {
-            lhs_intrvl = self.resolve_term(lhs)?.into_owned();
-            rhs_intrvl = self.resolve_term(rhs)?.into_owned();
+            lhs_intrvl = match self.refine_term(lhs, dirty) {
+                Ok(interval) => interval,
+                Err(SolverError::DeadCode) => return Ok(BoolInterval::Empty),
+                Err(e) => return Err(e),
+            };
+            rhs_intrvl = match self.refine_term(rhs, dirty) {
+                Ok(interval) => interval,
+                Err(SolverError::DeadCode) => return Ok(BoolInterval::Empty),
+                Err(e) => return Err(e),
+            };
         } else {
             lhs_intrvl = self.term_map.get(lhs).unwrap_or(&IntervalKind::Top).clone();
             rhs_intrvl = self.term_map.get(rhs).unwrap_or(&IntervalKind::Top).clone();
@@ -476,12 +490,15 @@ impl<'resolver> Resolver<'resolver> {
                 if let Some(intersect) = $intersect {
                     let new_intrvl = $interval.intersection(&intersect)?;
                     if new_intrvl.is_empty() {
+                        log::trace!("Empty interval found. Returning false.");
                         return Ok(BoolInterval::False);
                     }
                     if new_intrvl == $interval {
                         log::trace!("No change in interval for {}", $term);
                         truthy = true;
                     } else {
+                        log::trace!("Refining {} to {new_intrvl} and marking as dirty", $term);
+                        dirty.insert($term.clone());
                         self.term_map.to_mut().insert($term.clone(), new_intrvl);
                     }
                 }
@@ -489,23 +506,9 @@ impl<'resolver> Resolver<'resolver> {
         }
 
         intersect_and_update!(lhs, lhs_intrvl, lhs_intersect);
-
-        if !truthy {
-            // lhs has been refined, so we need to mark it as dirty.
-            log::trace!("lhs ({lhs}) has been refined to: {lhs_intrvl}");
-            dirty.insert(lhs.clone());
-        }
-
-        // Record truthy and reset.
-        let old_truthy = truthy;
-        truthy = false;
         intersect_and_update!(rhs, rhs_intrvl, rhs_intersect);
-        if !truthy {
-            log::trace!("rhs ({rhs}) has been refined to: {rhs_intrvl}");
-            dirty.insert(rhs.clone());
-        }
 
-        if truthy || old_truthy {
+        if truthy {
             Ok(BoolInterval::True)
         } else {
             Ok(BoolInterval::Unknown)
@@ -584,6 +587,37 @@ impl<'resolver> Resolver<'resolver> {
     /// This should be set whenever a new context is entered.
     pub(super) fn set_recompute(&mut self, other: bool) {
         self.recompute = other;
+    }
+
+    pub(crate) fn refine_term(
+        &mut self, term: &Term, dirty: &mut FastHashSet<Term>,
+    ) -> Result<IntervalKind, SolverError> {
+        let interval = self.resolve_term(term)?.into_owned();
+        if interval.is_empty() {
+            return Err(SolverError::DeadCode);
+        }
+        let term_map = self.term_map.to_mut();
+        let existing = term_map.get(term);
+        if interval.is_top() {
+            return Ok(interval);
+        }
+        if existing.is_none() && !interval.is_top() {
+            log::trace!("Updating {term} to {interval} and marking as dirty.");
+            term_map.insert(term.clone(), interval.clone());
+            dirty.insert(term.clone());
+            return Ok(interval);
+        }
+        let existing = existing.unwrap();
+        let new_interval = existing.intersection(&interval)?;
+        if new_interval.is_empty() {
+            return Err(SolverError::Unexpected("Empty interval when refining"));
+        }
+        if new_interval != *existing {
+            log::trace!("Updating {term} to {new_interval} and marking as dirty.");
+            term_map.insert(term.clone(), new_interval.clone());
+            dirty.insert(term.clone());
+        }
+        Ok(new_interval)
     }
 
     /// Resolve a term to an interval.
@@ -1166,20 +1200,20 @@ mod tests {
         resolver
             .refine_literal_comparison(&x_var, &Literal::U32(2), CmpOp::Gt, &mut dirty)
             .unwrap();
-        // x sxhould now be [3, 4]
+        // x should now be [3, 4]
         {
             let res = resolver.term_map.get(&x_var).unwrap();
             assert_eq!(res, &IntervalKind::U32(U32Interval::new_concrete(3, 4)));
         }
 
-        let dirty = &mut FastHashSet::default();
         // Refine `y` with y > x
         resolver
-            .refine_comparison(&y_var, &x_var, CmpOp::Gt, dirty)
+            .refine_comparison(&y_var, &x_var, CmpOp::Gt, &mut dirty)
             .unwrap();
         // x and y should be dirty...
         assert!(dirty.contains(&x_var));
         assert!(dirty.contains(&y_var));
+
         // y should now be [0, u32::MAX]
         {
             let res = resolver.term_map.get(&y_var).unwrap();

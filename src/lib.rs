@@ -1082,10 +1082,12 @@ impl AbcExpression {
         }
     }
 
+    #[allow(clippy::match_same_arms)]
     fn only_literals(&self) -> bool {
         match self {
-            Self::Vector { components, .. } => components.iter().all(Term::only_literals),
-            Self::Matrix { components, .. } => components.iter().all(Term::only_literals),
+            Self::Vector { components, .. } | Self::Matrix { components, .. } => {
+                components.iter().all(Term::only_literals)
+            }
             Self::UnaryOp(_, t) => t.only_literals(),
             Self::Cast(t, _) => t.only_literals(),
             Self::ArrayLength(t) => t.only_literals(),
@@ -1130,9 +1132,8 @@ impl Term {
         match self {
             Self::Literal(_) => true,
             Self::Expr(e) => e.only_literals(),
-            Self::Var(_) => false,
+            Self::Var(_) | Self::Empty => false,
             Self::Predicate(p) => p.only_literals(),
-            _ => false,
         }
     }
 }
