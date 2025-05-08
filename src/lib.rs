@@ -1742,7 +1742,6 @@ static NONETYPE: std::sync::LazyLock<Handle<AbcType>> =
     Serialize,
     Deserialize,
 )]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[cfg_attr(feature = "cffi", repr(C))]
 pub enum Literal {
     #[strum(to_string = "{0}")]
