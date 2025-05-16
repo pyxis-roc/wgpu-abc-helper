@@ -1184,7 +1184,7 @@ impl Context {
             Err(e) => return MaybeTerm::Error(e),
         };
 
-        MaybeTerm::Success(context.new_term(Term::new_select(iftrue, iffalse, predicate)))
+        MaybeTerm::Success(context.new_term(Term::new_select(predicate, iftrue, iffalse)))
     }
 
     /// Helper method for creating new vector terms in a DRY fashion. Also works for matrices.

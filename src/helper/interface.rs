@@ -1108,9 +1108,9 @@ impl ConstraintInterface for ConstraintHelper {
         self.write(format!("type({new_ret}) = {ty}").as_str());
         self.module.type_map.insert(new_ret.clone(), ty.clone());
         match self.active_summary {
-            None => Err(ConstraintError::SummaryError),
             Some(ref mut summary) if matches!(summary.return_type.as_ref(), AbcType::NoneType) => {
                 summary.return_type = ty.clone();
+                summary.ret_term = new_ret;
                 Ok(())
             }
             _ => Err(ConstraintError::DuplicateType),
