@@ -347,9 +347,7 @@ pub struct Context {
 /// That is, the empty term is *always* valid, in any context.
 #[unsafe(no_mangle)]
 pub extern "C" fn abc_get_empty_term() -> FfiTerm {
-    let term = FfiTerm { id: 0 };
-    println!("Empty term with id: {}", term.id);
-    return term;
+    FfiTerm { id: 0 }
 
 }
 
@@ -2594,7 +2592,6 @@ impl ContextInner {
             Some(return_dest) => match self.terms.get(return_dest.id) {
                 Some(Some(return_dest)) => Some(return_dest),
                 _ => {
-                    println!("Failed to get term with id: {}", return_dest.id);
                     return Err(ErrorCode::InvalidTerm)
                 },
             },
