@@ -347,7 +347,10 @@ pub struct Context {
 /// That is, the empty term is *always* valid, in any context.
 #[unsafe(no_mangle)]
 pub extern "C" fn abc_get_empty_term() -> FfiTerm {
-    FfiTerm { id: 0 }
+    let term = FfiTerm { id: 0 };
+    println!("Empty term with id: {}", term.id);
+    return term;
+
 }
 
 /// Implements the methods for Context which exist in the FFI api.
@@ -1827,8 +1830,8 @@ impl Context {
         get_context_mut!(@maybe_type, self, contexts, context);
 
         // The pointers have been checked for null and alignment, so we can safely create slices from them.
-        let fields_slice = std::slice::from_raw_parts(fields, num_fields);
-        let types_slice = std::slice::from_raw_parts(types, num_fields);
+        let fields_slice = unsafe { std::slice::from_raw_parts(fields, num_fields) };
+        let types_slice = unsafe { std::slice::from_raw_parts(types, num_fields) };
 
         // Make the new fields hashmap.
         let mut members = Vec::with_capacity(num_fields);
@@ -2590,7 +2593,10 @@ impl ContextInner {
         let return_dest = match return_dest {
             Some(return_dest) => match self.terms.get(return_dest.id) {
                 Some(Some(return_dest)) => Some(return_dest),
-                _ => return Err(ErrorCode::InvalidTerm),
+                _ => {
+                    println!("Failed to get term with id: {}", return_dest.id);
+                    return Err(ErrorCode::InvalidTerm)
+                },
             },
             None => None,
         };

@@ -71,7 +71,7 @@ use helper::AssumptionSerializer;
 /// Get the version of the abc package, as a string.
 #[allow(dead_code)]
 pub(crate) fn abc_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+    include_str!("../version.txt").trim().to_string()
 }
 
 /// Objects that derive this trait mean they support replacing terms within them with other terms.

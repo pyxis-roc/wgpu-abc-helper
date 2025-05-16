@@ -196,11 +196,10 @@ enum class UnaryOp {
 /// This handle corresponds to an index in the `Terms` vector, a static global variable in this library.
 /// This is because `Term` has members that are not FFI-Safe.
 struct FfiTerm {
-  auto get_id() {
-    return this->id;
-  }
-private:
   size_t id;
+  auto get_id() {
+    return id;
+  }
 };
 
 /// A context refers to a collection of terms, types, and summaries for a single compilation unit.
@@ -211,7 +210,6 @@ struct Context {
   auto get_id() {
     return this->id;
   }
-private:
   size_t id;
 public:
   MaybeTerm new_unit_pred(FfiTerm term);
@@ -342,7 +340,6 @@ struct FfiAbcType {
   auto get_id() {
     return this->id;
   }
-private:
   size_t id;
 };
 

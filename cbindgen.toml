@@ -36,27 +36,23 @@ derive_const_casts = true
   auto get_id() {
     return this->id;
   }
-private:
 """
 "FfiAbcType" = """
   auto get_id() {
     return this->id;
   }
-private:
 """
 
 "FFISummary" = """
   auto get_id() {
     return this->id;
   }
-private:
 """
 
 "Context" = """
   auto get_id() {
     return this->id;
   }
-private:
 """
 
 

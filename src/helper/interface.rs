@@ -458,7 +458,7 @@ pub struct ConstraintModule {
 impl Default for ConstraintModule {
     fn default() -> Self {
         ConstraintModule {
-            _version: env!("CARGO_PKG_VERSION").to_string(),
+            _version: include_str!("../../version.txt").trim().to_string(),
             type_map: FastHashMap::default(),
             global_assumptions: FastHashMap::default(),
             types: Vec::new(),

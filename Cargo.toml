@@ -12,7 +12,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
-lazy_static = { version = "1.4.0" }
+lazy_static = { version = "1.5.0" }
 strum = "0.27.0"
 strum_macros = { version = ">=0.27.0" }
 thiserror = "1.0.65"                                                    # Note: This cannot diverge from the version in wgpu.
@@ -29,7 +29,7 @@ cffi = ["dep:ffi-support"]
 
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [dev-dependencies]
 rstest = "0.22.0"
