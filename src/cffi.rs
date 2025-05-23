@@ -2045,6 +2045,16 @@ impl ConstraintSolution {
 
 impl Context {
     /// Solve the constraints for the provided summary.
+    /// 
+    /// Note: This method should be called on the entry point, not on
+    /// each individual summary. All of the constraints added to functions
+    /// called by the entry point will be solved.
+    /// 
+    /// If you want to instead determine whether constraints are always satisfied for a function
+    /// regardless of the arguments passed in, then this *can* be called with a non-entry point.
+    /// However, in practice, it is uncommon for constraints to be always satisfied without
+    /// information on the bounds of its arguments.
+    /// 
     ///
     /// Note that the returned solution *must be freed* by calling `abc_free_solution` otherwise
     /// a memory leak will occur.
@@ -2143,7 +2153,7 @@ impl Context {
     ///
     /// A loop variable is any variable that is updated within a loop. Supported operations
     /// are limited to binary operations. For best results, the increment / decrement term must be
-    /// a constnat.
+    /// a constant.
     ///
     /// # Arguments
     /// - `var`: The induction variable.
@@ -2332,7 +2342,9 @@ impl Context {
         context.end_summary_impl().into()
     }
 
-    /// Add an argument to the active summary.
+    /// Add an argument to the active summary. The term returned by this must be used when referring
+    /// to the argument; it is not safe to create a new variable with the same name, as the
+    /// argument may be renamed internally.
     ///
     /// The `begin_summary` method must be called before this method.
     ///
@@ -2591,9 +2603,7 @@ impl ContextInner {
         let return_dest = match return_dest {
             Some(return_dest) => match self.terms.get(return_dest.id) {
                 Some(Some(return_dest)) => Some(return_dest),
-                _ => {
-                    return Err(ErrorCode::InvalidTerm)
-                },
+                _ => return Err(ErrorCode::InvalidTerm),
             },
             None => None,
         };
