@@ -948,7 +948,6 @@ macro_rules! signed_mul_impl {
             let min = <$format>::MIN;
             let zero: $format = ConstZero::ZERO;
             let one: $format = ConstOne::ONE;
-            let one_wide: $intermediate = ConstOne::ONE;
             if self.is_empty_interval() || rhs.is_empty_interval() {
                 return WrappedInterval::Empty;
             }
@@ -991,56 +990,29 @@ macro_rules! signed_mul_impl {
                 }
             }
 
-            // If our lower is negative, then the new lower bound will be...
-            let lower_extended = <$intermediate>::from(self.lower);
-            let upper_extended = <$intermediate>::from(self.upper);
-            let other_lower_extended = <$intermediate>::from(rhs.lower);
-            let other_upper_extended = <$intermediate>::from(rhs.upper);
-
-            // We have to do cross product multiplication here.
-            // Can be vectorized later on for performance.
-
             let bounds = [
-                lower_extended * other_lower_extended,
-                lower_extended * other_upper_extended,
-                upper_extended * other_lower_extended,
-                upper_extended * other_upper_extended,
+                self.lower.checked_mul(rhs.lower),
+                self.lower.checked_mul(rhs.upper),
+                self.upper.checked_mul(rhs.lower),
+                self.upper.checked_mul(rhs.upper),
             ];
+            // If any bounds are `None`, then there was an overflow/underflow,
+            // in which case we return `Top`
 
-            // this is the bound in the wider format
-            let low_bound = bounds.iter().min().unwrap();
-            let high_bound = bounds.iter().max().unwrap();
-
-            let wrap_count = |val: $intermediate| (val.abs() >> <$format>::BITS) * val.signum();
-            // let upper_wrap_count = *high_bound / $intermediate::from()
-
-            // Safety: we bitand with the proper mask
-            let lower_bound = unsafe {
-                <$format>::try_from(low_bound.bitand((one_wide << <$format>::BITS) - one_wide)).unwrap_unchecked()
-            };
-            let upper_bound = unsafe {
-                <$format>::try_from(high_bound.bitand((one_wide << <$format>::BITS) - one_wide)).unwrap_unchecked()
-            };
-
-            let upper_wrap_count = wrap_count(*high_bound);
-            let lower_wrap_count = wrap_count(*low_bound);
-
-            if upper_wrap_count == lower_wrap_count {
-                // If they wrap the same number of times, then it must be the case that lower < upper.
-                assert!(lower_bound <= upper_bound, "Violating invariant: lower <= upper");
-                WrappedInterval::new_concrete(lower_bound, upper_bound)
-            } else if (lower_wrap_count + one_wide) == upper_wrap_count
-                // If upper wrapped one more time than lower and lower_bound > upper_bound...
-                // With unsigned, we also know that lower cannot wrap when upper does not.
-                && lower_bound > upper_bound
-            {
-                WrappedInterval::from_iter([
-                    BasicInterval::new(upper_bound, <$format as num::traits::Bounded>::max_value()),
-                    BasicInterval::new(min, lower_bound),
-                ])
-            } else {
-                WrappedInterval::Top
+            if bounds.iter().any(|&x| x.is_none()) {
+                return WrappedInterval::Top;
             }
+            // We know that all of these are Some, so we can unwrap them.
+            let bounds = [
+                bounds[0].unwrap(),
+                bounds[1].unwrap(),
+                bounds[2].unwrap(),
+                bounds[3].unwrap(),
+            ];
+            // now get the lower and upper bounds
+            let lower = bounds.iter().min().unwrap();
+            let upper = bounds.iter().max().unwrap();
+            return WrappedInterval::Basic(BasicInterval::new(*lower, *upper));
         }
     }
 }

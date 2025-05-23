@@ -63,7 +63,7 @@ macro_rules! get_cmp_interval {
 /// Otherwise, this expands to the interval for the term.
 macro_rules! short_circuit_literal_comparison {
     ($term:expr, $self:expr, $literal:expr, $op:expr, $ifnone:expr) => {
-        match $self.term_map.get($term) {
+        match $self.resolve_term($term).ok() {
             None => $ifnone,
             Some(interval) if interval.is_empty() => return Ok(BoolInterval::False),
             Some(interval) => match $op {
@@ -310,12 +310,9 @@ impl<'resolver> Resolver<'resolver> {
     }
 
     /// Special case for resolving a comparison against a literal.
-    ///
-    /// If `update` is true, then this also updates the intervals for the term map.
     pub(super) fn resolve_literal_comparison(
         &self, term: &'resolver Term, literal: &Literal, op: CmpOp,
     ) -> Result<BoolInterval, SolverError> {
-        log::trace!("Resolving literal comparison: {term} {op} {literal}");
         match term {
             Term::Empty => Ok(BoolInterval::Empty),
             Term::Predicate(_) => Err(SolverError::TypeMismatch {
@@ -391,7 +388,6 @@ impl<'resolver> Resolver<'resolver> {
         log::trace!("Refining comparison: {lhs} {op} {rhs}");
 
         // If the term does not exist in the map, then we set its type...
-
         let (lhs_intrvl, rhs_intrvl);
         if self.recompute {
             lhs_intrvl = match self.refine_term(lhs, dirty) {
@@ -440,13 +436,16 @@ impl<'resolver> Resolver<'resolver> {
                 };
 
                 if new_intrvl != lhs_intrvl {
-                    log::trace!("Inserting {lhs} with {new_intrvl}");
+                    log::trace!("Inserting {lhs} with {new_intrvl} and marking as dirty");
                     self.term_map
                         .to_mut()
                         .insert(lhs.clone(), new_intrvl.clone());
+                    dirty.insert(lhs.clone());
                 }
                 if new_intrvl != rhs_intrvl {
+                    log::trace!("Inserting {rhs} with {new_intrvl} and marking as dirty");
                     self.term_map.to_mut().insert(rhs.clone(), new_intrvl);
+                    dirty.insert(rhs.clone());
                 }
                 return Ok(result);
             }
@@ -627,10 +626,12 @@ impl<'resolver> Resolver<'resolver> {
         &'a self, term: &'resolver Term,
     ) -> Result<Cow<'a, IntervalKind>, SolverError> {
         use Cow;
+        // Get the thing from the term map
+        let cached = self.term_map.get(term);
 
-        if !self.recompute {
+        if !self.recompute && cached.is_some() {
             return Ok(Cow::Borrowed(
-                self.term_map.get(term).unwrap_or(&IntervalKind::TOP),
+                cached.unwrap(),
             ));
         }
 
@@ -646,8 +647,6 @@ impl<'resolver> Resolver<'resolver> {
             ))),
             Term::Literal(l) => Ok(Cow::Owned(l.as_interval())),
         }
-
-        // Get the type of the term, if we can...
     }
 }
 
@@ -927,7 +926,6 @@ impl Resolver<'_> {
     pub(super) fn refine_predicate(
         &mut self, pred: &Predicate, dirty: &mut FastHashSet<Term>,
     ) -> Result<BoolInterval, SolverError> {
-        log::trace!("Refining intervals from assuming true: {pred}");
         match pred {
             Predicate::True => Ok(BoolInterval::True),
             Predicate::False => Ok(BoolInterval::False),

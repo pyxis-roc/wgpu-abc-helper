@@ -1942,8 +1942,6 @@ pub(crate) fn check_constraints(
 
     // For each constraint..
     for (constraint, idx) in enumerate_constraints(module, target, id) {
-        log::trace!("Checking constraint {} (id: {})", constraint, idx);
-
         // If there is a guard, check the constraint using its resolver.
         if let Some(guard) = constraint.get_guard_ref() {
             let constraint_resolution = if let Some(resolver) = predicate_to_resolver.get(guard) {
