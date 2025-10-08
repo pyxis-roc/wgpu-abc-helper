@@ -210,6 +210,7 @@ struct Context {
   auto get_id() {
     return this->id;
   }
+  
   size_t id;
 public:
   MaybeTerm new_unit_pred(FfiTerm term);

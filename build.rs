@@ -13,19 +13,19 @@ fn main() {
         }
         println!("cargo:rerun-if-changed=ffi_headers/wgpu_abc_helper.hpp");
 
-        let crate_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let _crate_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         // All we need to do is copy the files to the specified include directory.
 
         let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
         let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
 
-        // Generate the C/C++ header using cbindgen
+        // Generate the C/C++ header using cbindgen first, then do this as a build step.
         let output_file = std::path::Path::new(&target_dir)
             .join(&profile)
             .join("include")
             .join("wgpu_abc_helper.hpp");
 
-        std::fs::copy("ffi_headers/wgpu_abc_helper.hpp", &output_file).unwrap();
+        std::fs::copy("ffi_headers/wgpu_abc_helper.hpp", &output_file);
     }
 }
 // REUSE-IgnoreEnd

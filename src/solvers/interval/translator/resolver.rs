@@ -276,6 +276,7 @@ impl<'resolver> Resolver<'resolver> {
     pub(super) fn refine_literal_comparison(
         &mut self, term: &Term, literal: &Literal, op: CmpOp, dirty: &mut FastHashSet<Term>,
     ) -> Result<BoolInterval, SolverError> {
+        #[cfg(feature = "logging")]
         log::trace!("Refining literal comparison: {term} {op} {literal}");
         match term {
             Term::Empty => Ok(BoolInterval::Empty),
@@ -289,6 +290,7 @@ impl<'resolver> Resolver<'resolver> {
             Term::Var(_) | Term::Expr(_) => {
                 let intersect_with = cmp_to_interval!(self, term, literal, op);
                 let existing = short_circuit_literal_comparison!(term, self, literal, op, {
+                    #[cfg(feature = "logging")]
                     log::trace!("Updated {term} to {intersect_with}, and marked as dirty.");
                     self.term_map.to_mut().insert(term.clone(), intersect_with);
                     dirty.insert(term.clone());
@@ -300,6 +302,7 @@ impl<'resolver> Resolver<'resolver> {
                 } else if *existing == intersection {
                     Ok(BoolInterval::True)
                 } else {
+                    #[cfg(feature = "logging")]
                     log::trace!("Updated {term} to {intersection}, and marked as dirty.");
                     self.term_map.to_mut().insert(term.clone(), intersection);
                     dirty.insert(term.clone());
@@ -374,18 +377,71 @@ impl<'resolver> Resolver<'resolver> {
         result
     }
 
+    #[allow(clippy::similar_names)]
+    fn handle_array_assignment(
+        &mut self, lhs: &Term, rhs: &Term, op: CmpOp, dirty: &mut FastHashSet<Term>,
+    ) -> Result<BoolInterval, SolverError> {
+        let CmpOp::Eq = op else {
+            return Ok(BoolInterval::Unknown);
+        };
+        // If and ONLY IF the terms are vectors, then we go through the term map and find all elements with assumptions
+        // HOW do we know if the terms are vectors?
+        // Well, we *should* have them in the type map?
+        let lhs_term_ty = self.type_map.get(lhs);
+        let rhs_term_ty = self.type_map.get(rhs);
+        // Get acutal types of the terms and see if they are bot sized arrays
+        let Some(lhs_term_ty_inner) = lhs_term_ty else {
+            return Ok(BoolInterval::Unknown);
+        };
+        let Some(rhs_ty_term_inner) = lhs_term_ty else {
+            return Ok(BoolInterval::Unknown);
+        };
+        let AbcType::SizedArray { size: lhs_size, .. } = lhs_term_ty_inner.as_ref() else {
+            return Ok(BoolInterval::Unknown);
+        };
+        let AbcType::SizedArray { size: rhs_size, .. } = rhs_ty_term_inner.as_ref() else {
+            return Ok(BoolInterval::Unknown);
+        };
+        // Now, we need to add an equality assumption on each element of the array.
+
+        if lhs_size != rhs_size {
+            return Ok(BoolInterval::Unknown);
+        }
+        // We know they are the same size. Now, add assumptions for each element.
+        let mut real_res = BoolInterval::Unknown;
+        for idx in 0..(*lhs_size).into() {
+            let lhs_idx_term = Term::new_index_access(lhs, &Term::new_literal(idx));
+            let rhs_idx_term = Term::new_index_access(rhs, &Term::new_literal(idx));
+            // have to boolean compare all of these
+            let res = self.refine_comparison(&lhs_idx_term, &rhs_idx_term, op, dirty)?;
+            // Update real_res based on the result. If real res was false, then it stays false. If it was true, then it becomes whatever res is.
+            if let (BoolInterval::Unknown | BoolInterval::True, _) = (real_res, res) {
+                real_res = res;
+            }
+        }
+
+        Ok(real_res)
+    }
+
     /// Resolve the comparison between two terms into an interval, and update the
     /// intervals being compared.
     ///
-    /// The return value for this function will be a reference to a `BooleanInterval` that
-    ///
-    /// If `update` is true, then this will refine the intervals in the term map
+    /// The return value for this function will be a reference to a `BooleanInterval`
     #[allow(clippy::too_many_lines)]
     pub(super) fn refine_comparison(
         &mut self, lhs: &Term, rhs: &Term, op: CmpOp, dirty: &mut FastHashSet<Term>,
     ) -> Result<BoolInterval, SolverError> {
         handle_literals_or_empty!(@refine, self, lhs, rhs, op, dirty);
+        #[cfg(feature = "logging")]
         log::trace!("Refining comparison: {lhs} {op} {rhs}");
+        // Special case for array assignments.
+        if let (Some(lhs_ty), Some(rhs_ty)) = (self.type_map.get(lhs), self.type_map.get(rhs)) {
+            if matches!(lhs_ty.as_ref(), AbcType::SizedArray { .. })
+                && matches!(rhs_ty.as_ref(), AbcType::SizedArray { .. })
+            {
+                return self.handle_array_assignment(lhs, rhs, op, dirty);
+            }
+        }
 
         // If the term does not exist in the map, then we set its type...
         let (lhs_intrvl, rhs_intrvl);
@@ -407,14 +463,17 @@ impl<'resolver> Resolver<'resolver> {
 
         // if either are empty, this is empty.
         if lhs_intrvl.is_empty() || rhs_intrvl.is_empty() {
+            #[cfg(feature = "logging")]
             log::info!("Found empty interval during resolution. Assuming dead code...");
             return Ok(BoolInterval::Empty);
         }
 
+        #[cfg(feature = "logging")]
         log::debug!("lhs ({lhs}) is: {lhs_intrvl}, rhs ({rhs}) is: {rhs_intrvl}");
 
         /// Given the mode, resolve to a pair of Option<IntervalKind> that can be intersected with to refine `lhs` and `rhs` re
         if lhs_intrvl.is_top() && rhs_intrvl.is_top() {
+            #[cfg(feature = "logging")]
             log::trace!("Both values are top. No refinement possible.");
             // We can do no refinement here, other than for inequalities.
             // This is not likely to be useful.
@@ -436,6 +495,7 @@ impl<'resolver> Resolver<'resolver> {
                 };
 
                 if new_intrvl != lhs_intrvl {
+                    #[cfg(feature = "logging")]
                     log::trace!("Inserting {lhs} with {new_intrvl} and marking as dirty");
                     self.term_map
                         .to_mut()
@@ -443,6 +503,7 @@ impl<'resolver> Resolver<'resolver> {
                     dirty.insert(lhs.clone());
                 }
                 if new_intrvl != rhs_intrvl {
+                    #[cfg(feature = "logging")]
                     log::trace!("Inserting {rhs} with {new_intrvl} and marking as dirty");
                     self.term_map.to_mut().insert(rhs.clone(), new_intrvl);
                     dirty.insert(rhs.clone());
@@ -489,13 +550,16 @@ impl<'resolver> Resolver<'resolver> {
                 if let Some(intersect) = $intersect {
                     let new_intrvl = $interval.intersection(&intersect)?;
                     if new_intrvl.is_empty() {
+                        #[cfg(feature = "logging")]
                         log::trace!("Empty interval found. Returning false.");
                         return Ok(BoolInterval::False);
                     }
                     if new_intrvl == $interval {
+                        #[cfg(feature = "logging")]
                         log::trace!("No change in interval for {}", $term);
                         truthy = true;
                     } else {
+                        #[cfg(feature = "logging")]
                         log::trace!("Refining {} to {new_intrvl} and marking as dirty", $term);
                         dirty.insert($term.clone());
                         self.term_map.to_mut().insert($term.clone(), new_intrvl);
@@ -601,6 +665,7 @@ impl<'resolver> Resolver<'resolver> {
             return Ok(interval);
         }
         if existing.is_none() && !interval.is_top() {
+            #[cfg(feature = "logging")]
             log::trace!("Updating {term} to {interval} and marking as dirty.");
             term_map.insert(term.clone(), interval.clone());
             dirty.insert(term.clone());
@@ -609,9 +674,10 @@ impl<'resolver> Resolver<'resolver> {
         let existing = existing.unwrap();
         let new_interval = existing.intersection(&interval)?;
         if new_interval.is_empty() {
-            return Err(SolverError::Unexpected("Empty interval when refining"));
+            // return Err(SolverError::Unexpected("Empty interval when refining"));
         }
         if new_interval != *existing {
+            #[cfg(feature = "logging")]
             log::trace!("Updating {term} to {new_interval} and marking as dirty.");
             term_map.insert(term.clone(), new_interval.clone());
             dirty.insert(term.clone());
@@ -627,12 +693,9 @@ impl<'resolver> Resolver<'resolver> {
     ) -> Result<Cow<'a, IntervalKind>, SolverError> {
         use Cow;
         // Get the thing from the term map
-        let cached = self.term_map.get(term);
 
-        if !self.recompute && cached.is_some() {
-            return Ok(Cow::Borrowed(
-                cached.unwrap(),
-            ));
+        if let (false, Some(cached)) = (self.recompute, self.term_map.get(term)) {
+            return Ok(Cow::Borrowed(cached));
         }
 
         match *term {
@@ -752,7 +815,6 @@ impl<'resolver> Resolver<'resolver> {
         // When we see a write to a vector, we need to update the domain of the array values.
         match ty.as_ref() {
             AbcType::DynamicArray { ty, .. } | AbcType::SizedArray { ty, .. } => {
-                log::trace!("Array found to contain type {ty}");
                 match ty.as_ref() {
                     AbcType::Scalar(scalar) => IntervalKind::from(*scalar),
                     _ => IntervalKind::Top,
@@ -766,9 +828,10 @@ impl<'resolver> Resolver<'resolver> {
     #[allow(clippy::cast_sign_loss)]
     fn resolve_index_access(&self, base: &Term, index: &Term) -> Result<IntervalKind, SolverError> {
         let Some(ty) = self.type_map.get(base) else {
-            for (term, ty) in self.type_map {
-                log::trace!("===Term: {term} has type {ty}===");
-            }
+            // for (term, ty) in self.type_map {
+            //     log::trace!("===Term: {term} has type {ty}===");
+            // }
+            #[cfg(feature = "logging")]
             log::trace!("No type found for {base}. Resolving to top...");
 
             return Ok(IntervalKind::Top);
@@ -818,6 +881,7 @@ impl<'resolver> Resolver<'resolver> {
         &self, expr: &'resolver AbcExpression,
     ) -> Result<IntervalKind, SolverError> {
         use AbcExpression as Expr;
+        #[cfg(feature = "logging")]
         log::trace!(
             "Resolving expression: {expr} (variant is: {})",
             expr.variant_name()
@@ -843,6 +907,7 @@ impl<'resolver> Resolver<'resolver> {
 
             Expr::Cast(term, dest_ty) => Ok(self.resolve_cast(term, *dest_ty)),
             Expr::Dot(_, _) => {
+                #[cfg(feature = "logging")]
                 log::warn!(
                     "{} expression not supported. Resolving interval to top...",
                     expr.variant_name()
@@ -874,11 +939,13 @@ impl<'resolver> Resolver<'resolver> {
                 a.interval_min(&b).map_err(IntervalError::into)
             }
             Expr::Pow { .. } => {
+                #[cfg(feature = "logging")]
                 log::warn!("Pow expression not supported. Resolving interval to top...");
                 Ok(IntervalKind::Top)
             }
         };
 
+        #[cfg(feature = "logging")]
         if let Ok(ref res) = res {
             log::trace!("Resolved {expr} to {res}");
         }
@@ -1068,12 +1135,15 @@ impl Resolver<'_> {
                 match self.term_map.get(term) {
                     None | Some(IntervalKind::Top) => Ok(BoolInterval::Unknown),
                     Some(&IntervalKind::Bool(interval)) => Ok(interval),
-                    Some(IntervalKind::I32(_)) => Err(SolverError::TypeMismatch {
-                        expected: "Bool",
-                        have: "I32",
-                        file: file!(),
-                        line: line!(),
-                    }),
+                    Some(IntervalKind::I32(_)) => {
+                        println!("Mismatch predicate unit for term: {term} and predicate: {pred}");
+                        Err(SolverError::TypeMismatch {
+                            expected: "Bool",
+                            have: "I32",
+                            file: file!(),
+                            line: line!(),
+                        })
+                    }
                     Some(IntervalKind::U32(_)) => Err(SolverError::TypeMismatch {
                         expected: "Bool",
                         have: "U32",
@@ -1115,8 +1185,10 @@ mod tests {
     use rstest::rstest;
 
     extern crate env_logger;
+    #[cfg(feature = "logging")]
     use log;
 
+    #[cfg(feature = "logging")]
     fn init_logging() {
         env_logger::builder()
             .is_test(true)
@@ -1127,6 +1199,7 @@ mod tests {
 
     #[rstest]
     fn test_array_value_refinement() {
+        #[cfg(feature = "logging")]
         init_logging();
         let x_var = Term::Var(Handle::new(crate::Var {
             name: "x".to_string(),

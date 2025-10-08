@@ -6,8 +6,8 @@
 #![allow(clippy::module_name_repetitions)]
 
 use serde::{Deserialize, Serialize};
-
-use log::{info as log_info, trace as log_trace, warn as log_warning};
+#[cfg(feature = "logging")]
+use log::{info as log_info, trace as log_trace, warn as log_warning, error as log_error};
 
 use crate::{
     add_assumption_impl,
@@ -487,6 +487,7 @@ impl ConstraintModule {
         FastHashMap<u32, Vec<SolverResult>>,
         crate::solvers::interval::translator::SolverError,
     > {
+        #[cfg(feature = "logging")]
         log_info!("Solving constraints for summary {idx}");
         crate::solvers::interval::translator::check_constraints(self, idx)
     }
@@ -770,7 +771,7 @@ impl ConstraintHelper {
     fn write<T: AsRef<str>>(&mut self, s: T) {
         let s = s.as_ref();
         self.statements.push(s.to_string());
-        log_trace!("{s}",);
+        // log_trace!("{s}",);
     }
 
     /// Mark the length of a dimension
@@ -779,7 +780,7 @@ impl ConstraintHelper {
     #[allow(unused)]
     pub(crate) fn mark_ndim(&mut self, term: &Term, ndim: u8) {
         self.statements.push(format!("ndim({term}) = {ndim}"));
-        log_trace!("ndim({term}) = {ndim}");
+        // log_trace!("ndim({term}) = {ndim}");
     }
 
     /// Join the predicate stack together, returning a predicate which is the conjunction of all predicates in the stack.
@@ -833,6 +834,8 @@ impl ConstraintHelper {
         &mut self, lhs: &Term, op: AssumptionOp, rhs: &Term,
     ) -> Result<Assumption, ConstraintError> {
         if lhs.is_empty() {
+            #[cfg(feature = "logging")]
+            log_error!("Invalid empty lhs for assumption");
             return Err(ConstraintError::EmptyTerm);
         }
 
@@ -853,6 +856,7 @@ impl ConstraintHelper {
         }
 
         // The common case.
+        // Test with guards always being true.
         if let AssumptionOp::Assign = op {
             return Ok(Assumption::Assign {
                 guard: self.make_guard(),
@@ -862,6 +866,8 @@ impl ConstraintHelper {
         }
         // rhs must be a literal, var, or expression here
         if matches!(rhs, Term::Empty | Term::Predicate(_)) {
+            #[cfg(feature = "logging")]
+            log_error!("Invalid rhs for assumption: {rhs}");
             return Err(ConstraintError::EmptyTerm);
         }
 
@@ -1027,6 +1033,7 @@ impl ConstraintInterface for ConstraintHelper {
         let mut argname = String::with_capacity(name.len() + 1);
         argname.push('@');
         argname.push_str(&name);
+        #[cfg(feature = "logging")]
         log::trace!("Renamed {name} to {}", argname);
         let var = self.declare_var(Var { name: argname })?;
         self.mark_type(&var, ty)?;
@@ -1182,6 +1189,8 @@ impl ConstraintInterface for ConstraintHelper {
         let Some(retval) = retval else {
             return if summary.return_type.is_none_type() {
                 Ok(())
+            } else if let Some(Term::Empty) = retval {
+                Ok(())
             } else {
                 Err(ConstraintError::NoReturnValue)
             };
@@ -1204,9 +1213,10 @@ impl ConstraintInterface for ConstraintHelper {
                 file!(),
             ));
         };
+        // If we are given an empty term, then 
 
         let Some(old_guard) = guard.clone() else {
-            log_warning!("`mark_return` following an unguarded return. Ignoring...");
+            // log_warning!("`mark_return` following an unguarded return. Ignoring...");
             return Ok(());
         };
 
@@ -1244,7 +1254,8 @@ impl ConstraintInterface for ConstraintHelper {
     ///
     /// Errors if the assumption is not well formed or supported by the system.
     fn add_assumption(&mut self, lhs: &Term, op: AssumptionOp, rhs: &Term) -> Result<(), Self::E> {
-        let assumption = self.build_assumption(lhs, op, rhs)?;
+        let assumption = self.build_assumption(lhs, op, rhs)?.clone();
+        let cloned = assumption.clone();
         self.write(assumption.to_string());
         let added = if let Some(ref mut s) = self.active_summary {
             add_assumption_impl!(s.assumptions, assumption)
@@ -1337,7 +1348,7 @@ impl ConstraintInterface for ConstraintHelper {
             Term::Predicate(p) => p.clone(),
             _ => Predicate::new_unit(p),
         };
-        log_info!("Beginning predicate block: {}", pred.as_ref());
+        // log_info!("Beginning predicate block: {}", pred.as_ref());
         self.predicate_stack.push(pred);
         Ok(())
     }
@@ -1347,7 +1358,7 @@ impl ConstraintInterface for ConstraintHelper {
     /// Returns an error if the predicate stack is empty.
     fn end_predicate_block(&mut self) -> Result<(), ConstraintError> {
         // Predicate block is sugar. It disappears, so there should be no use for it...
-        log_info!("Popping predicate");
+        // log_info!("Popping predicate");
         // Make the permanent predicate the negation of the current predicate.
 
         // If we currently have a return predicate, then the permanent predicate becomes the And of the current permanent predicate and the negation of the return predicate.

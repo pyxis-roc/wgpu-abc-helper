@@ -50,6 +50,10 @@ fn main() -> Result<()> {
         ));
     }
 
+    for (_, assumption) in module.summaries()[idx].assumptions.iter() {
+        log::info!("Assumption: {assumption}");
+    }
+
     let res = module.solve(idx.into());
     if let Err(e) = &res {
         log::error!("Error solving constraint: {e}");

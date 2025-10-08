@@ -2045,16 +2045,15 @@ impl ConstraintSolution {
 
 impl Context {
     /// Solve the constraints for the provided summary.
-    /// 
+    ///
     /// Note: This method should be called on the entry point, not on
     /// each individual summary. All of the constraints added to functions
     /// called by the entry point will be solved.
-    /// 
+    ///
     /// If you want to instead determine whether constraints are always satisfied for a function
     /// regardless of the arguments passed in, then this *can* be called with a non-entry point.
     /// However, in practice, it is uncommon for constraints to be always satisfied without
     /// information on the bounds of its arguments.
-    /// 
     ///
     /// Note that the returned solution *must be freed* by calling `abc_free_solution` otherwise
     /// a memory leak will occur.

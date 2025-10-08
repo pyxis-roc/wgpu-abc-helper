@@ -43,6 +43,7 @@ use crate::{
     Assumption, BinaryOp, CmpOp, Constraint, ConstraintId, ConstraintOp, FastHashSet, Literal,
     Predicate, StructField, SummaryId, Var,
 };
+#[cfg(feature = "logging")]
 use log::warn;
 use strum::VariantNames;
 use thiserror;
@@ -602,6 +603,7 @@ impl IntervalKind {
         if self.is_empty() || other.is_empty() {
             Ok(IntervalKind::U32(U32Interval::Empty))
         } else {
+            #[cfg(feature = "logging")]
             warn!("Shl is not implemented for any type. Overapproximating to Top.");
             Ok(IntervalKind::Top)
         }
@@ -661,6 +663,7 @@ impl IntervalKind {
             Self::U32(_) => self.clone(),
             Self::Bool(interval) => Self::U32(interval.interval_cast()),
             _ => {
+                #[cfg(feature = "logging")]
                 log::warn!(
                     "Casting from {:?} to u32 results in an overapproximation",
                     self.variant_name()
@@ -677,6 +680,7 @@ impl IntervalKind {
             Self::U32(interval) => Self::I32(interval.interval_cast()),
             Self::Bool(interval) => Self::I32(interval.interval_cast()),
             _ => {
+                #[cfg(feature = "logging")]
                 log::warn!(
                     "Casting from {:?} to i32 results in an overapproximation",
                     self.variant_name()
@@ -1500,6 +1504,7 @@ fn assumption_propagation<'a>(
     resolver: &mut Resolver<'a>, mut worklist: FastHashSet<Handle<Predicate>>,
     term_dependencies: &'a FastHashMap<Term, FastHashSet<Term>>,
 ) -> Result<(), SolverError> {
+    #[cfg(feature = "logging")]
     log::trace!(
         "Starting assumption propagation. Length of worklist: {}, length of term dependencies: {}",
         worklist.len(),
@@ -1518,6 +1523,7 @@ fn assumption_propagation<'a>(
         // Process all predicates in the worklist
         for predicate in worklist.drain() {
             if iteration_cntr > 0 {
+                #[cfg(feature = "logging")]
                 log::trace!("Processing {predicate} in iteration {iteration_cntr}");
             }
             // Refine the predicate and collect dirty terms
@@ -1548,6 +1554,7 @@ fn assumption_propagation<'a>(
                     continue;
                 }
                 completed.remove(&completed_predicate);
+                #[cfg(feature = "logging")]
                 log::trace!("{completed_predicate} has dirty dependencies. Re-adding to worklist.");
                 new_worklist.insert(completed_predicate);
             }
@@ -1573,6 +1580,7 @@ fn resolve_from_assumption<'a, 'b>(
     term_dependencies: &'a FastHashMap<Term, FastHashSet<Term>>,
 ) -> Result<&'b Resolver<'a>, SolverError> {
     if resolver_map.get(guard).is_none() {
+        #[cfg(feature = "logging")]
         log::trace!("Creating a resolver for: {guard}");
 
         let mut worklist: FastHashSet<Handle<Predicate>> = FastHashSet::default();
@@ -1589,19 +1597,29 @@ fn resolve_from_assumption<'a, 'b>(
             }
         }
         let mut resolver = core_resolver.clone();
-        // let local_id_term = Term::Var(Var { name: "local_id".to_string()}.into());
-        // let local_id_access = Term::new_index_access(&local_id_term, &Term::Literal(Literal::U32(1)));
-        // let cast = Term::new_cast(local_id_access, AbcScalar::Sint(4).into());
-        // let cast_interval = resolver.get_interval_for_term(&cast);
+        #[cfg(feature = "logging")]
+        {
+            let local_id_term = Term::Var(
+                Var {
+                    name: "local_id".to_string(),
+                }
+                .into(),
+            );
+            let local_id_access =
+                Term::new_index_access(&local_id_term, &Term::Literal(Literal::U32(1)));
+            let cast = Term::new_cast(local_id_access, AbcScalar::Sint(4));
+            let cast_interval = resolver.get_interval_for_term(&cast);
 
-        // if let Some(interval) = cast_interval {
-        //     log::trace!("Value for {cast} is: {interval}");
-        // } else {
-        //     log::trace!("{cast} is unknown");
-        // };
+            if let Some(interval) = cast_interval {
+                log::trace!("Value for {cast} is: {interval}");
+            } else {
+                log::trace!("{cast} is unknown");
+            };
+        }
 
         assumption_propagation(&mut resolver, worklist, term_dependencies)?;
         for (term, interval) in resolver.term_map.iter() {
+            #[cfg(feature = "logging")]
             log::trace!("Resolution for {term}: {interval}");
         }
         resolver_map.insert(guard.clone(), resolver);
@@ -1962,7 +1980,7 @@ pub(crate) fn check_constraints(
                     Err(_) => interval::SolverResult::No,
                 }
             };
-
+            #[cfg(feature = "logging")]
             log::trace!("Resolved constraint to {:}", constraint_resolution);
             results.entry(*idx).or_default().push(constraint_resolution);
         } else {

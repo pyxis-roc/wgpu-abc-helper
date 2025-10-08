@@ -2,6 +2,7 @@ use super::{
     BasicInterval, FastHashSet, Intersect, IntersectAssign, Interval, IntervalBoundary,
     IntervalMax, IntervalMin, Union, WrappedInterval,
 };
+#[cfg(feature = "logging")]
 use log::warn as log_warn;
 use std::collections::BTreeSet;
 
@@ -106,6 +107,7 @@ impl<T: IntervalBoundary> CompoundInterval<T> {
     }
 
     /// Same as [`FastHashSet::new`]
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             inner: BTreeSet::new(),
@@ -286,6 +288,7 @@ impl<T: IntervalBoundary> Interval for CompoundInterval<T> {
     /// [`WrappedInterval::top`](super::WrappedInterval::top)
     #[inline]
     fn top() -> Self {
+        #[cfg(feature = "logging")]
         log_warn!("Call to `CompoundInterval::Top`");
         let mut inner = BTreeSet::new();
         inner.insert(BasicInterval::top());

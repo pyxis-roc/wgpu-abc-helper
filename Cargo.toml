@@ -17,7 +17,7 @@ strum = "0.27.0"
 strum_macros = { version = ">=0.27.0" }
 thiserror = "1.0.65"                                                    # Note: This cannot diverge from the version in wgpu.
 rustc-hash = "1.1.0"
-log = "0.4.22"
+log = {version = "0.4.22", optional = true}
 serde = { version = ">=1.0.210", features = ["derive", "rc"] }
 serde_json = { version = ">=1.0.128" }
 ffi-support = { version = "^0.4.4", optional = true }
@@ -26,6 +26,7 @@ num = { version = "^0.4.0" }
 
 [features]
 cffi = ["dep:ffi-support"]
+logging = ["log"]
 
 
 [lib]
@@ -53,3 +54,4 @@ wildcard_imports = { level = "allow", priority = 1 }        # Wildcard imports a
 
 [[example]]
 name = "abce-solve-json"
+required-features = ["logging"]
