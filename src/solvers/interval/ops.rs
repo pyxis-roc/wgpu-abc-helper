@@ -1793,7 +1793,7 @@ macro_rules! interval_trait_impl {
                 let mut new = Self::new();
 
                 for interval in self.iter() {
-                    match interval.interval_add(rhs) {
+                    match interval.interval_add(rhs) { // TODO: this should not be interval_add. It should be $method
                         WrappedInterval::Basic(interval) => {
                             new.insert(interval);
                         }

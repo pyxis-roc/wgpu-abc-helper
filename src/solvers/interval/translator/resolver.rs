@@ -294,6 +294,14 @@ impl<'resolver> Resolver<'resolver> {
                     log::trace!("Updated {term} to {intersect_with}, and marked as dirty.");
                     self.term_map.to_mut().insert(term.clone(), intersect_with);
                     dirty.insert(term.clone());
+                    // check if this is an index access. If it is, then we mark the base as dirty too.
+                    if let Term::Expr(expr_handle) = term {
+                        if let AbcExpression::IndexAccess { base, .. } = expr_handle.as_ref() {
+                            #[cfg(feature = "logging")]
+                            log::trace!("Marking base {base} of index access as dirty.");
+                            dirty.insert(base.clone());
+                        }
+                    }
                     return Ok(BoolInterval::Unknown);
                 });
                 let intersection = existing.intersection(&intersect_with)?;
@@ -306,6 +314,13 @@ impl<'resolver> Resolver<'resolver> {
                     log::trace!("Updated {term} to {intersection}, and marked as dirty.");
                     self.term_map.to_mut().insert(term.clone(), intersection);
                     dirty.insert(term.clone());
+                    if let Term::Expr(expr_handle) = term {
+                        if let AbcExpression::IndexAccess { base, .. } = expr_handle.as_ref() {
+                            #[cfg(feature = "logging")]
+                            log::trace!("Marking base {base} of index access as dirty.");
+                            dirty.insert(base.clone());
+                        }
+                    }
                     Ok(BoolInterval::Unknown)
                 }
             }
@@ -380,6 +395,7 @@ impl<'resolver> Resolver<'resolver> {
     #[allow(clippy::similar_names)]
     fn handle_array_assignment(
         &mut self, lhs: &Term, rhs: &Term, op: CmpOp, dirty: &mut FastHashSet<Term>,
+        lhs_dirty: &mut bool, rhs_dirty: &mut bool,
     ) -> Result<BoolInterval, SolverError> {
         let CmpOp::Eq = op else {
             return Ok(BoolInterval::Unknown);
@@ -391,9 +407,13 @@ impl<'resolver> Resolver<'resolver> {
         let rhs_term_ty = self.type_map.get(rhs);
         // Get acutal types of the terms and see if they are bot sized arrays
         let Some(lhs_term_ty_inner) = lhs_term_ty else {
+            #[cfg(feature = "logging")]
+            log::warn!("LHS term {lhs} has no type information. Cannot refine array assignment.");
             return Ok(BoolInterval::Unknown);
         };
         let Some(rhs_ty_term_inner) = lhs_term_ty else {
+            #[cfg(feature = "logging")]
+            log::warn!("RHS term {rhs} has no type information. Cannot refine array assignment.");
             return Ok(BoolInterval::Unknown);
         };
         let AbcType::SizedArray { size: lhs_size, .. } = lhs_term_ty_inner.as_ref() else {
@@ -410,10 +430,19 @@ impl<'resolver> Resolver<'resolver> {
         // We know they are the same size. Now, add assumptions for each element.
         let mut real_res = BoolInterval::Unknown;
         for idx in 0..(*lhs_size).into() {
+            #[cfg(feature = "logging")]
+            log::trace!("Refining array assignment for {lhs}[{idx}] = {rhs}[{idx}]");
             let lhs_idx_term = Term::new_index_access(lhs, &Term::new_literal(idx));
             let rhs_idx_term = Term::new_index_access(rhs, &Term::new_literal(idx));
             // have to boolean compare all of these
-            let res = self.refine_comparison(&lhs_idx_term, &rhs_idx_term, op, dirty)?;
+            let res = self.refine_comparison(
+                &lhs_idx_term,
+                &rhs_idx_term,
+                op,
+                dirty,
+                lhs_dirty,
+                rhs_dirty,
+            )?;
             // Update real_res based on the result. If real res was false, then it stays false. If it was true, then it becomes whatever res is.
             if let (BoolInterval::Unknown | BoolInterval::True, _) = (real_res, res) {
                 real_res = res;
@@ -430,16 +459,30 @@ impl<'resolver> Resolver<'resolver> {
     #[allow(clippy::too_many_lines)]
     pub(super) fn refine_comparison(
         &mut self, lhs: &Term, rhs: &Term, op: CmpOp, dirty: &mut FastHashSet<Term>,
+        lhs_dirty: &mut bool, rhs_dirty: &mut bool,
     ) -> Result<BoolInterval, SolverError> {
-        handle_literals_or_empty!(@refine, self, lhs, rhs, op, dirty);
         #[cfg(feature = "logging")]
         log::trace!("Refining comparison: {lhs} {op} {rhs}");
+        handle_literals_or_empty!(@refine, self, lhs, rhs, op, dirty);
         // Special case for array assignments.
         if let (Some(lhs_ty), Some(rhs_ty)) = (self.type_map.get(lhs), self.type_map.get(rhs)) {
             if matches!(lhs_ty.as_ref(), AbcType::SizedArray { .. })
                 && matches!(rhs_ty.as_ref(), AbcType::SizedArray { .. })
             {
-                return self.handle_array_assignment(lhs, rhs, op, dirty);
+                #[cfg(feature = "logging")]
+                log::trace!("Handling array assignment for {lhs} = {rhs}");
+                let res = self.handle_array_assignment(lhs, rhs, op, dirty, lhs_dirty, rhs_dirty);
+                if (*lhs_dirty) {
+                    #[cfg(feature = "logging")]
+                    log::trace!("Marking {lhs} as dirty due to array assignment");
+                    dirty.insert(lhs.clone());
+                }
+                if (*rhs_dirty) {
+                    #[cfg(feature = "logging")]
+                    log::trace!("Marking {rhs} as dirty due to array assignment");
+                    dirty.insert(rhs.clone());
+                }
+                return res;
             }
         }
 
@@ -501,12 +544,14 @@ impl<'resolver> Resolver<'resolver> {
                         .to_mut()
                         .insert(lhs.clone(), new_intrvl.clone());
                     dirty.insert(lhs.clone());
+                    *lhs_dirty = true;
                 }
                 if new_intrvl != rhs_intrvl {
                     #[cfg(feature = "logging")]
                     log::trace!("Inserting {rhs} with {new_intrvl} and marking as dirty");
                     self.term_map.to_mut().insert(rhs.clone(), new_intrvl);
                     dirty.insert(rhs.clone());
+                    *rhs_dirty = true;
                 }
                 return Ok(result);
             }
@@ -546,7 +591,7 @@ impl<'resolver> Resolver<'resolver> {
 
         /// DRY macro for intersecting and updating the term map.
         macro_rules! intersect_and_update {
-            ($term:expr, $interval:expr, $intersect:expr) => {
+            ($term:expr, $interval:expr, $intersect:expr, $mark:expr) => {
                 if let Some(intersect) = $intersect {
                     let new_intrvl = $interval.intersection(&intersect)?;
                     if new_intrvl.is_empty() {
@@ -562,14 +607,15 @@ impl<'resolver> Resolver<'resolver> {
                         #[cfg(feature = "logging")]
                         log::trace!("Refining {} to {new_intrvl} and marking as dirty", $term);
                         dirty.insert($term.clone());
+                        *$mark = true;
                         self.term_map.to_mut().insert($term.clone(), new_intrvl);
                     }
                 }
             };
         }
 
-        intersect_and_update!(lhs, lhs_intrvl, lhs_intersect);
-        intersect_and_update!(rhs, rhs_intrvl, rhs_intersect);
+        intersect_and_update!(lhs, lhs_intrvl, lhs_intersect, lhs_dirty);
+        intersect_and_update!(rhs, rhs_intrvl, rhs_intersect, rhs_dirty);
 
         if truthy {
             Ok(BoolInterval::True)
@@ -1088,7 +1134,9 @@ impl Resolver<'_> {
                     _ => unreachable!("Unknown flags should never be set in a BoolInterval"),
                 })
             }
-            Predicate::Comparison(op, lhs, rhs) => self.refine_comparison(lhs, rhs, *op, dirty),
+            Predicate::Comparison(op, lhs, rhs) => {
+                self.refine_comparison(lhs, rhs, *op, dirty, &mut false, &mut false)
+            }
         }
     }
     /// Obtain the domain of the predicate.
@@ -1298,7 +1346,14 @@ mod tests {
 
         // Refine `y` with y > x
         resolver
-            .refine_comparison(&y_var, &x_var, CmpOp::Gt, &mut dirty)
+            .refine_comparison(
+                &y_var,
+                &x_var,
+                CmpOp::Gt,
+                &mut dirty,
+                &mut false,
+                &mut false,
+            )
             .unwrap();
         // x and y should be dirty...
         assert!(dirty.contains(&x_var));

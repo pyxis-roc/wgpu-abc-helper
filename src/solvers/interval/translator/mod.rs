@@ -1730,7 +1730,6 @@ impl AbcExpression {
             // self only, or those that don't support refinement
             AbcExpression::ArrayLength(_ | _)
             | AbcExpression::Dot(_, _)
-            | AbcExpression::IndexAccess { .. }
             | AbcExpression::ArrayLengthDim(_, _)
             | AbcExpression::Matrix { .. }
             | AbcExpression::Vector { .. }
@@ -1741,6 +1740,7 @@ impl AbcExpression {
             AbcExpression::Abs(a)
             | AbcExpression::Cast(a, _)
             | AbcExpression::Splat(a, _)
+            | AbcExpression::IndexAccess { base: a, .. }
             | AbcExpression::UnaryOp(_, a) => {
                 a.collect_sub_terms(memo);
                 do_extend!(a, memo, sub_terms);
@@ -1981,7 +1981,7 @@ pub(crate) fn check_constraints(
                 }
             };
             #[cfg(feature = "logging")]
-            log::trace!("Resolved constraint to {:}", constraint_resolution);
+            log::trace!("Resolved constraint [id: {idx}] - {constraint} - to {:}", constraint_resolution);
             results.entry(*idx).or_default().push(constraint_resolution);
         } else {
             // If there is no guard, then we check the constraint using the core resolver.
